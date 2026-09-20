@@ -1,0 +1,82 @@
+diff --git a/src/server/game/Events/GameEventMgr.cpp b/src/server/game/Events/GameEventMgr.cpp
+index de185926b..887fab6b4 100644
+--- a/src/server/game/Events/GameEventMgr.cpp
++++ b/src/server/game/Events/GameEventMgr.cpp
+@@ -1890,26 +1890,61 @@ void GameEventMgr::SendWorldStateUpdate(Player* player, uint16 eventId)
+ class GameEventAIHookWorker
+ {
+ public:
+-    GameEventAIHookWorker(uint16 eventId, bool activate) : _eventId(eventId), _activate(activate) { }
++    GameEventAIHookWorker(Map* map, uint16 eventId, bool activate) : _map(map), _eventId(eventId), _activate(activate) { }
+ 
+     void Visit(std::unordered_map<ObjectGuid, Creature*>& creatureMap)
+     {
+-        for (auto const& p : creatureMap)
+-            if (p.second->IsInWorld() && !p.second->IsDuringRemoveFromWorld() && p.second->FindMap() && p.second->IsAIEnabled && p.second->AI())
+-                p.second->AI()->sOnGameEvent(_activate, _eventId);
++        for (ObjectGuid const& guid : Snapshot(creatureMap))
++        {
++            Creature* creature = _map->GetCreature(guid);
++            if (!creature || !creature->IsInWorld() || creature->IsDuringRemoveFromWorld() || !creature->FindMap() || !creature->IsAIEnabled || !creature->AI())
++                continue;
++
++            creature->AI()->sOnGameEvent(_activate, _eventId);
++        }
+     }
+ 
+     void Visit(std::unordered_map<ObjectGuid, GameObject*>& gameObjectMap)
+     {
+-        for (auto const& p : gameObjectMap)
+-            if (p.second->IsInWorld() && p.second->FindMap() && p.second->AI())
+-                p.second->AI()->OnGameEvent(_activate, _eventId);
++        for (ObjectGuid const& guid : Snapshot(gameObjectMap))
++        {
++            GameObject* go = _map->GetGameObject(guid);
++            if (!go || !go->IsInWorld() || !go->FindMap() || !go->AI())
++                continue;
++
++            go->AI()->OnGameEvent(_activate, _eventId);
++        }
+     }
+ 
+     template<class T>
+     void Visit(std::unordered_map<ObjectGuid, T*>&) { }
+ 
+ private:
++    //! A SMART_EVENT_GAME_EVENT_START script can erase its own creature from the map's
++    //! object store while we are walking that store. Confirmed chain (game event 89
++    //! "Leprithus", entry 572, SMART_ACTION_RESPAWN_TARGET on self):
++    //!
++    //!   GameEventAIHookWorker::Visit -> SmartScript::ProcessEventsFor -> ProcessAction
++    //!     -> Creature::Respawn -> Map::AddObjectToRemoveList
++    //!     -> Unit::CleanupBeforeRemoveFromMap -> Creature::RemoveFromWorld
++    //!     -> _objectsStore.Remove<Creature>()      // erase, node freed
++    //!
++    //! The erase frees the hash node, so the range-for's next read of __next_ returns
++    //! garbage and the following dereference faults. Walk a snapshot of the guids instead
++    //! and look each object up again - the store, not a pointer we cached, is the authority
++    //! on whether the object still exists by the time we reach it.
++    template<class T>
++    static std::vector<ObjectGuid> Snapshot(std::unordered_map<ObjectGuid, T*> const& objectMap)
++    {
++        std::vector<ObjectGuid> guids;
++        guids.reserve(objectMap.size());
++        for (auto const& p : objectMap)
++            guids.push_back(p.first);
++
++        return guids;
++    }
++
++    Map* _map;
+     uint16 _eventId;
+     bool _activate;
+ };
+@@ -1920,7 +1955,7 @@ void GameEventMgr::RunSmartAIScripts(uint16 eventId, bool activate)
+     //! Not entirely sure how this will affect units in non-loaded grids.
+     sMapMgr->DoForAllMaps([eventId, activate](Map* map)
+     {
+-        GameEventAIHookWorker worker(eventId, activate);
++        GameEventAIHookWorker worker(map, eventId, activate);
+         TypeContainerVisitor<GameEventAIHookWorker, MapStoredObjectTypesContainer> visitor(worker);
+         visitor.Visit(map->GetObjectsStore());
+     });

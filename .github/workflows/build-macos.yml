@@ -1,0 +1,128 @@
+name: build-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: 'mod-playerbots/azerothcore-wotlk ref'
+        default: 'Playerbot'
+      module_ref:
+        description: 'mod-playerbots/mod-playerbots ref'
+        default: 'master'
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: 'true'
+
+    steps:
+      - name: Checkout CI repo
+        uses: actions/checkout@v7
+        with:
+          path: ci
+
+      - name: Checkout core
+        uses: actions/checkout@v7
+        with:
+          repository: mod-playerbots/azerothcore-wotlk
+          ref: ${{ inputs.core_ref }}
+          path: src
+
+      - name: Checkout playerbots module
+        uses: actions/checkout@v7
+        with:
+          repository: mod-playerbots/mod-playerbots
+          ref: ${{ inputs.module_ref }}
+          path: src/modules/mod-playerbots
+
+      # Left uncommitted on purpose: the worldserver revision banner then carries
+      # the '+' suffix that marks a patched tree, exactly like a local build.
+      - name: Apply patches
+        run: |
+          for p in "$GITHUB_WORKSPACE"/ci/patches/*.patch; do
+            echo "== $p"
+            git -C src apply --verbose "$p"
+          done
+
+      - name: Install dependencies
+        run: |
+          brew update --quiet
+          brew install --quiet boost openssl@3 readline mysql@8.4 ccache ninja
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache:macos-15:${{ inputs.core_ref }}:${{ github.run_id }}
+          restore-keys: |
+            ccache:macos-15:${{ inputs.core_ref }}:
+            ccache:macos-15:
+
+      # Flags mirror the local build; keep the two in step when either changes.
+      - name: Configure
+        run: |
+          cmake -S src -B build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/out" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAPPS_BUILD=all \
+            -DTOOLS_BUILD=none \
+            -DSCRIPTS=static \
+            -DMODULES=static \
+            -DBUILD_TESTING=OFF \
+            -DWITH_WARNINGS=OFF \
+            -DUSE_COREPCH=ON \
+            -DUSE_SCRIPTPCH=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 \
+            -DMYSQL_ADD_INCLUDE_PATH=/opt/homebrew/opt/mysql@8.4/include/mysql \
+            -DREADLINE_INCLUDE_DIR=/opt/homebrew/opt/readline/include \
+            -DREADLINE_LIBRARY=/opt/homebrew/opt/readline/lib/libreadline.dylib
+
+      - name: Build
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Install
+        run: cmake --install build
+
+      - name: Bundle dylibs
+        run: ci/scripts/bundle-dylibs.sh "$GITHUB_WORKSPACE/out/bin"
+
+      - name: Write manifest
+        run: |
+          {
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner=macos-15 $(sw_vers -productVersion) $(uname -m)"
+            echo "compiler=$(c++ --version | head -1)"
+            echo "core_ref=${{ inputs.core_ref }} $(git -C src rev-parse HEAD)"
+            echo "module_ref=${{ inputs.module_ref }} $(git -C src/modules/mod-playerbots rev-parse HEAD)"
+            echo "ci_commit=$(git -C ci rev-parse HEAD)"
+            for p in ci/patches/*.patch; do
+              echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"
+            done
+          } > out/bin/BUILD-MANIFEST.txt
+          cat out/bin/BUILD-MANIFEST.txt
+
+      - name: Check the payload is self-contained
+        run: |
+          fail=0
+          while read -r f; do
+            case "$(file -b "$f")" in *Mach-O*) ;; *) continue ;; esac
+            bad=$(otool -L "$f" | tail -n +2 | awk '{print $1}' \
+              | grep -vE '^(/usr/lib/|/System/|@executable_path/|@rpath/|@loader_path/)' || true)
+            if [ -n "$bad" ]; then echo "$f still points outside the bundle:"; echo "$bad"; fail=1; fi
+          done < <(find out/bin -type f)
+          exit $fail
+
+      - name: Report sizes
+        run: du -sh out/bin out/bin/lib && ls -lh out/bin
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: server-pb-macos-arm64
+          path: out/
+          retention-days: 30
+          if-no-files-found: error

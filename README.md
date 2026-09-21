@@ -25,6 +25,11 @@ Artifact `server-pb-macos-arm64`, laid out like an AzerothCore install prefix:
 The MySQL *server* is a separate matter: it still has to be installed and
 running on the machine that hosts the databases.
 
+`worldserver.conf` and `authserver.conf` each need `SourceDirectory` pointing at
+the installed `sql-source/`: that is where the DB updater reads the SQL at every
+startup, and a server that cannot find it shuts itself down. The install script
+refuses to finish if either config is missing it.
+
 ## Running a build
 
 ```sh
@@ -56,9 +61,6 @@ build instead of being silently skipped.
   pointers that a `SMART_EVENT_GAME_EVENT_START` script can invalidate.
   Upstream: azerothcore/azerothcore-wotlk#27291 (issue),
   azerothcore/azerothcore-wotlk#27275 (closed PR).
-
-The two server configs each need `SourceDirectory` pointing at the installed
-`sql-source/`; the install script refuses to finish if either one does not.
 
 The patch is deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

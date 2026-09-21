@@ -90,6 +90,10 @@ jobs:
       - name: Build
         run: cmake --build build -j"$(sysctl -n hw.ncpu)"
 
+      # Read the hit rate here rather than inferring it from the wall clock.
+      - name: ccache stats
+        run: ccache -s
+
       - name: Install
         run: |
           DESTDIR="$GITHUB_WORKSPACE/stage" cmake --install build
@@ -115,6 +119,12 @@ jobs:
           done
           cp -R src/modules/mod-playerbots/data/sql \
                 "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data/"
+          # git does not carry empty directories, and updates_include lists these
+          # by name: without them every startup logs a "does not exist, skipped".
+          for db in auth characters world; do
+            mkdir -p "$GITHUB_WORKSPACE/out/sql-source/data/sql/custom/db_$db"
+          done
+          mkdir -p "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data/sql/playerbots/archive"
           du -sh "$GITHUB_WORKSPACE/out/sql-source"
 
       - name: Check the compiled-in config path

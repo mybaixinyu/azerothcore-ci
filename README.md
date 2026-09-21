@@ -57,6 +57,9 @@ build instead of being silently skipped.
   Upstream: azerothcore/azerothcore-wotlk#27291 (issue),
   azerothcore/azerothcore-wotlk#27275 (closed PR).
 
+The two server configs each need `SourceDirectory` pointing at the installed
+`sql-source/`; the install script refuses to finish if either one does not.
+
 The patch is deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.
 

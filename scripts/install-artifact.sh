@@ -56,6 +56,14 @@ rsync -a --include '*/' --include '*.dist' --exclude '*' "$staging/etc/" "$prefi
 # has to point here, or it reports every applied update as missing.
 rsync -a --delete "$staging/sql-source/" "$prefix/sql-source/"
 
+# Both servers have their own SourceDirectory, and each one shuts down on its
+# own when it cannot find the SQL tree - fixing only the config you happened to
+# test leaves the other broken.
+for conf in worldserver authserver; do
+    grep -qxF "SourceDirectory = \"$prefix/sql-source\"" "$prefix/etc/$conf.conf" || {
+        echo "$conf.conf: set SourceDirectory = \"$prefix/sql-source\"" >&2; exit 1; }
+done
+
 echo "== installed"
 "$prefix/bin/worldserver" --version | head -2
 echo "previous binaries kept as bin/*.bak-$stamp"

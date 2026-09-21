@@ -38,6 +38,10 @@ cat "$staging/bin/BUILD-MANIFEST.txt"
 test -x "$staging/bin/worldserver" || { echo "artifact has no worldserver" >&2; exit 1; }
 "$staging/bin/worldserver" --version >/dev/null || {
     echo "downloaded worldserver will not start on this machine" >&2; exit 1; }
+# --version never reads a config file, so it says nothing about whether this
+# build can find its own etc/ and etc/modules. That path is compiled in.
+strings "$staging/bin/worldserver" | grep -qxF "$prefix/etc" || {
+    echo "this build looks for its config somewhere other than $prefix/etc" >&2; exit 1; }
 
 stamp="$(date +%Y%m%d-%H%M%S)"
 for b in worldserver authserver; do
@@ -48,6 +52,9 @@ rsync -a --delete "$staging/bin/lib/" "$prefix/bin/lib/"
 rsync -a "$staging/bin/" "$prefix/bin/" --exclude 'lib/'
 # .dist files only: the live *.conf in etc/ carries local settings and is never touched.
 rsync -a --include '*/' --include '*.dist' --exclude '*' "$staging/etc/" "$prefix/etc/"
+# The DB updater reads these at every startup; worldserver.conf's SourceDirectory
+# has to point here, or it reports every applied update as missing.
+rsync -a --delete "$staging/sql-source/" "$prefix/sql-source/"
 
 echo "== installed"
 "$prefix/bin/worldserver" --version | head -2

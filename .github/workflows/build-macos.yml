@@ -14,6 +14,11 @@ jobs:
   build:
     runs-on: macos-15
     env:
+      # worldserver compiles its config directory in (_CONF_DIR) and reads the
+      # module configs from <prefix>/etc/modules, so a payload built under any
+      # other prefix starts up unable to find playerbots.conf. Build for the
+      # prefix the server machine actually uses and stage the install elsewhere.
+      PREFIX: /Users/bai/WorkSpace/azerothcore/server-pb
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: 'true'
@@ -65,7 +70,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S src -B build -G Ninja \
-            -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/out" \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
             -DAPPS_BUILD=all \
             -DTOOLS_BUILD=none \
@@ -86,10 +91,36 @@ jobs:
         run: cmake --build build -j"$(sysctl -n hw.ncpu)"
 
       - name: Install
-        run: cmake --install build
+        run: |
+          DESTDIR="$GITHUB_WORKSPACE/stage" cmake --install build
+          # DESTDIR only moves where the files land; the paths inside the
+          # binaries stay $PREFIX, which is the point.
+          ln -s "$GITHUB_WORKSPACE/stage$PREFIX" "$GITHUB_WORKSPACE/out"
+          test -f "$GITHUB_WORKSPACE/out/bin/worldserver"
 
       - name: Bundle dylibs
         run: ci/scripts/bundle-dylibs.sh "$GITHUB_WORKSPACE/out/bin"
+
+      # The DB updater reads its SQL from SourceDirectory, which on the server
+      # machine points at the copy installed from here. base/ (fresh-install
+      # dumps) and old/ (pre-3.3.5 history) are not in updates_include, so the
+      # updater never looks at them.
+      - name: Stage the SQL the updater needs
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out/sql-source/data/sql" \
+                   "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data"
+          for d in updates archive custom create playerbots; do
+            [ -d "src/data/sql/$d" ] || continue
+            cp -R "src/data/sql/$d" "$GITHUB_WORKSPACE/out/sql-source/data/sql/"
+          done
+          cp -R src/modules/mod-playerbots/data/sql \
+                "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data/"
+          du -sh "$GITHUB_WORKSPACE/out/sql-source"
+
+      - name: Check the compiled-in config path
+        run: |
+          strings "$GITHUB_WORKSPACE/out/bin/worldserver" | grep -qxF "$PREFIX/etc" \
+            || { echo "worldserver was not built for $PREFIX" >&2; exit 1; }
 
       - name: Write manifest
         run: |
@@ -123,6 +154,6 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: server-pb-macos-arm64
-          path: out/
+          path: stage/Users/bai/WorkSpace/azerothcore/server-pb/
           retention-days: 30
           if-no-files-found: error

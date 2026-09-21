@@ -7,6 +7,13 @@
 #   install-artifact.sh <run-id>     # a specific run
 set -euo pipefail
 
+# A download that spans an idle-sleep window dies mid-transfer: gh reports
+# "error writing zip archive: unexpected EOF", which reads like a broken
+# download tool rather than a machine that went to sleep.
+if [ -z "${INSTALL_ARTIFACT_AWAKE:-}" ]; then
+    INSTALL_ARTIFACT_AWAKE=1 exec caffeinate -i "$0" "$@"
+fi
+
 repo="mybaixinyu/azerothcore-ci"
 prefix="$HOME/WorkSpace/azerothcore/server-pb"
 staging="$(mktemp -d)"

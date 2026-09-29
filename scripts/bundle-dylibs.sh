@@ -4,6 +4,12 @@
 # machine that has no Homebrew boost/openssl/readline/mysql client installed.
 # arm64 rejects a binary whose signature no longer matches, so everything that
 # is rewritten gets re-signed ad hoc afterwards.
+#
+# RC4 (the client session cipher) lives in OpenSSL 3's legacy provider, a separate
+# dylib that libcrypto would look for in a Homebrew Cellar path compiled into it -
+# gone after the next `brew upgrade openssl@3`. It is bundled as
+# <bindir>/lib/ossl-modules/legacy.dylib; the core (patch 0002) points OpenSSL's
+# provider search path there at startup.
 set -euo pipefail
 
 bindir="${1:?usage: bundle-dylibs.sh <bindir>}"
@@ -46,3 +52,14 @@ done
 
 echo "bundled $bundled dylibs into $libdir"
 ls -1 "$libdir"
+
+moddir="$(strings "$libdir/libcrypto.3.dylib" | grep -E '^/.*/ossl-modules$' | sed -n 1p)"
+[ -f "$moddir/legacy.dylib" ] || { echo "no legacy.dylib in '$moddir'" >&2; exit 1; }
+mkdir -p "$libdir/ossl-modules"
+cp "$moddir/legacy.dylib" "$libdir/ossl-modules/legacy.dylib"
+chmod u+w "$libdir/ossl-modules/legacy.dylib"
+while IFS= read -r dep; do
+    install_name_tool -change "$dep" "@executable_path/lib/$(basename "$dep")" "$libdir/ossl-modules/legacy.dylib"
+done < <(external_deps "$libdir/ossl-modules/legacy.dylib")
+codesign --force --sign - --timestamp=none "$libdir/ossl-modules/legacy.dylib" 2>/dev/null
+echo "bundled the OpenSSL legacy provider"

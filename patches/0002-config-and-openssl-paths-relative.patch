@@ -1,0 +1,68 @@
+diff --git a/src/common/Configuration/Config.cpp b/src/common/Configuration/Config.cpp
+index 79c58af..a6bec4c 100644
+--- a/src/common/Configuration/Config.cpp
++++ b/src/common/Configuration/Config.cpp
+@@ -24,6 +24,7 @@
+ #include <algorithm>
+ #include <cctype>
+ #include <cstdlib>
++#include <filesystem>
+ #include <fstream>
+ #include <locale>
+ #include <mutex>
+@@ -763,7 +764,11 @@ bool ConfigMgr::LoadModulesConfigs(bool isReload /*= false*/, bool isNeedPrintIn
+     }
+ 
+     // Start loading module configs
+-    std::string const& moduleConfigPath = GetConfigPath() + "modules/";
++    // Sibling of the main config file, not of the compiled-in _CONF_DIR, so a
++    // relocated install that passes -c finds its module configs too. Without -c
++    // the file name is GetConfigPath() + <name>, so this is the same directory.
++    std::string moduleConfigPath = std::filesystem::path(_filename).parent_path().generic_string();
++    moduleConfigPath += moduleConfigPath.empty() ? "modules/" : "/modules/";
+ 
+     for (auto const& fileName : _additonalFiles)
+     {
+diff --git a/src/common/Cryptography/OpenSSLCrypto.cpp b/src/common/Cryptography/OpenSSLCrypto.cpp
+index a997cfe..bb341bb 100644
+--- a/src/common/Cryptography/OpenSSLCrypto.cpp
++++ b/src/common/Cryptography/OpenSSLCrypto.cpp
+@@ -38,10 +38,38 @@ void SetupLibrariesForWindows()
+ }
+ #endif
+ 
++#ifdef __APPLE__
++#include <cstdint>
++#include <filesystem>
++#include <mach-o/dyld.h>
++#include <string>
++
++// RC4 lives in OpenSSL 3's legacy provider, which libcrypto looks for in a
++// directory compiled into it - a Homebrew Cellar path on the build machine.
++// Load it from <program dir>/lib/ossl-modules instead, like Windows does above.
++void SetupLibrariesForMacOS()
++{
++    namespace fs = std::filesystem;
++
++    uint32_t size = 0;
++    _NSGetExecutablePath(nullptr, &size);
++    std::string buffer(size, '\0');
++    if (_NSGetExecutablePath(buffer.data(), &size) != 0)
++        return;
++
++    std::error_code ec;
++    fs::path modules = fs::weakly_canonical(fs::path(buffer.c_str()), ec).parent_path() / "lib" / "ossl-modules";
++    if (!ec && fs::exists(modules / "legacy.dylib", ec))
++        OSSL_PROVIDER_set_default_search_path(nullptr, modules.generic_string().c_str());
++}
++#endif
++
+ void OpenSSLCrypto::threadsSetup()
+ {
+ #if AC_PLATFORM == AC_PLATFORM_WINDOWS
+     SetupLibrariesForWindows();
++#elif defined(__APPLE__)
++    SetupLibrariesForMacOS();
+ #endif
+     LegacyProvider = OSSL_PROVIDER_load(nullptr, "legacy");
+     DefaultProvider = OSSL_PROVIDER_load(nullptr, "default");

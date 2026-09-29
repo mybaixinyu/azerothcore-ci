@@ -62,7 +62,15 @@ build instead of being silently skipped.
   Upstream: azerothcore/azerothcore-wotlk#27291 (issue),
   azerothcore/azerothcore-wotlk#27275 (closed PR).
 
-The patch is deliberately left uncommitted in the build tree, so the revision
+- `0002-config-and-openssl-paths-relative.patch` — makes the binaries independent
+  of where they were built. Module configs are read from `modules/` next to the
+  main config file (`-c`), not from the compiled-in `_CONF_DIR`; and on macOS
+  OpenSSL's provider search path is set to `<bin>/lib/ossl-modules`, where the
+  legacy provider (RC4) is bundled, instead of a Homebrew Cellar path that
+  disappears on `brew upgrade openssl@3`. Without this the payload only runs
+  when it is installed at exactly the prefix it was built for.
+
+The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.
 
 ## Keeping the workflow honest

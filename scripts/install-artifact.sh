@@ -38,10 +38,8 @@ cat "$staging/bin/BUILD-MANIFEST.txt"
 test -x "$staging/bin/worldserver" || { echo "artifact has no worldserver" >&2; exit 1; }
 "$staging/bin/worldserver" --version >/dev/null || {
     echo "downloaded worldserver will not start on this machine" >&2; exit 1; }
-# --version never reads a config file, so it says nothing about whether this
-# build can find its own etc/ and etc/modules. That path is compiled in.
-strings "$staging/bin/worldserver" | grep -qxF "$prefix/etc" || {
-    echo "this build looks for its config somewhere other than $prefix/etc" >&2; exit 1; }
+test -f "$staging/bin/lib/ossl-modules/legacy.dylib" || {
+    echo "artifact has no OpenSSL legacy provider (RC4)" >&2; exit 1; }
 
 stamp="$(date +%Y%m%d-%H%M%S)"
 for b in worldserver authserver; do
@@ -49,6 +47,7 @@ for b in worldserver authserver; do
 done
 
 rsync -a --delete "$staging/bin/lib/" "$prefix/bin/lib/"
+rm -rf "$prefix/ossl"   # hand-patched layout from before builds were relocatable
 rsync -a "$staging/bin/" "$prefix/bin/" --exclude 'lib/'
 # .dist files only: the live *.conf in etc/ carries local settings and is never touched.
 rsync -a --include '*/' --include '*.dist' --exclude '*' "$staging/etc/" "$prefix/etc/"

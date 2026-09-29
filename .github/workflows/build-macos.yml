@@ -14,11 +14,10 @@ jobs:
   build:
     runs-on: macos-15
     env:
-      # worldserver compiles its config directory in (_CONF_DIR) and reads the
-      # module configs from <prefix>/etc/modules, so a payload built under any
-      # other prefix starts up unable to find playerbots.conf. Build for the
-      # prefix the server machine actually uses and stage the install elsewhere.
-      PREFIX: /Users/bai/WorkSpace/azerothcore/server-pb
+      # Only a staging layout: patch 0002 makes the binaries find their configs
+      # and OpenSSL provider relative to where they are run from, so nothing
+      # built here depends on this path.
+      PREFIX: /opt/azerothcore-pb
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: 'true'
@@ -97,8 +96,6 @@ jobs:
       - name: Install
         run: |
           DESTDIR="$GITHUB_WORKSPACE/stage" cmake --install build
-          # DESTDIR only moves where the files land; the paths inside the
-          # binaries stay $PREFIX, which is the point.
           ln -s "$GITHUB_WORKSPACE/stage$PREFIX" "$GITHUB_WORKSPACE/out"
           test -f "$GITHUB_WORKSPACE/out/bin/worldserver"
 
@@ -127,10 +124,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data/sql/playerbots/archive"
           du -sh "$GITHUB_WORKSPACE/out/sql-source"
 
-      - name: Check the compiled-in config path
-        run: |
-          strings "$GITHUB_WORKSPACE/out/bin/worldserver" | grep -qxF "$PREFIX/etc" \
-            || { echo "worldserver was not built for $PREFIX" >&2; exit 1; }
+      - name: Check the OpenSSL legacy provider is bundled
+        run: test -f "$GITHUB_WORKSPACE/out/bin/lib/ossl-modules/legacy.dylib"
 
       - name: Write manifest
         run: |
@@ -164,6 +159,6 @@ jobs:
       - uses: actions/upload-artifact@v5
         with:
           name: server-pb-macos-arm64
-          path: stage/Users/bai/WorkSpace/azerothcore/server-pb/
+          path: stage/opt/azerothcore-pb/
           retention-days: 30
           if-no-files-found: error

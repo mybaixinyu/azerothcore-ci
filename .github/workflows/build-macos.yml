@@ -50,6 +50,10 @@ jobs:
             echo "== $p"
             git -C src apply --verbose "$p"
           done
+          for p in "$GITHUB_WORKSPACE"/ci/patches/module/*.patch; do
+            echo "== $p"
+            git -C src/modules/mod-playerbots apply --verbose "$p"
+          done
 
       - name: Install dependencies
         run: |
@@ -136,7 +140,7 @@ jobs:
             echo "core_ref=${{ inputs.core_ref }} $(git -C src rev-parse HEAD)"
             echo "module_ref=${{ inputs.module_ref }} $(git -C src/modules/mod-playerbots rev-parse HEAD)"
             echo "ci_commit=$(git -C ci rev-parse HEAD)"
-            for p in ci/patches/*.patch; do
+            for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"
             done
           } > out/bin/BUILD-MANIFEST.txt

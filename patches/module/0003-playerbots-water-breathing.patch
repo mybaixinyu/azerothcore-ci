@@ -1,7 +1,7 @@
-diff --git a/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp b/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
 index 7a7ae33..8dde7ed 100644
---- a/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
-+++ b/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
 @@ -275,6 +275,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
              bot->SetPower(bot->getPowerType(), bot->GetMaxPower(bot->getPowerType()));
      }

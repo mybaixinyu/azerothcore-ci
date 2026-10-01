@@ -1,0 +1,16 @@
+diff --git a/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp b/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
+index 7a7ae33..8dde7ed 100644
+--- a/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
++++ b/src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
+@@ -275,6 +275,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
+             bot->SetPower(bot->getPowerType(), bot->GetMaxPower(bot->getPowerType()));
+     }
+ 
++    // Bots never surface on their own, so following a master into deep water drowns them.
++    // 5697 (Unending Breath) carries SPELL_AURA_WATER_BREATHING, which turns the breath timer off.
++    if (bot->IsAlive() && bot->IsUnderWater() && !bot->HasWaterBreathingAura())
++        bot->CastSpell(bot, 5697, true);
++
+     AllowActivity();
+ 
+     if (!CanUpdateAI())

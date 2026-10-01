@@ -69,6 +69,12 @@ build instead of being silently skipped.
   legacy provider (RC4) is bundled, instead of a Homebrew Cellar path that
   disappears on `brew upgrade openssl@3`. Without this the payload only runs
   when it is installed at exactly the prefix it was built for.
+- `0003-playerbots-water-breathing.patch` — a bot that is under water without a
+  water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
+  follow their master into deep water no longer drown. Touches the module
+  (`src/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp`), not the core. Upstream
+  has no fix; related open issues: mod-playerbots#1771, #1772. Drop this patch if
+  the module gains its own handling.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

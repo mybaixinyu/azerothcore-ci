@@ -69,6 +69,12 @@ build instead of being silently skipped.
   legacy provider (RC4) is bundled, instead of a Homebrew Cellar path that
   disappears on `brew upgrade openssl@3`. Without this the payload only runs
   when it is installed at exactly the prefix it was built for.
+- `0004-desolace-caravan-refollow.patch` — the Gizelton Caravan escorts (quests 5821
+  and 5943) failed because the summoned Rigger and kodos stop following Cork after
+  they fight: they are plain summons without an owner, so evading sends them to a
+  stale home position, and `SummonsFollow()` only ran at the stops. Re-issues the
+  follow every 2 s for any summon that is out of combat and not following. Upstream:
+  azerothcore/azerothcore-wotlk#6593, #5848, #20626 (all open). Untested in game.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

@@ -1,0 +1,59 @@
+diff --git a/src/server/scripts/Kalimdor/zone_desolace.cpp b/src/server/scripts/Kalimdor/zone_desolace.cpp
+index e89b177..a9ba78b 100644
+--- a/src/server/scripts/Kalimdor/zone_desolace.cpp
++++ b/src/server/scripts/Kalimdor/zone_desolace.cpp
+@@ -80,6 +80,7 @@ public:
+         EventMap events;
+         ObjectGuid summons[MAX_CARAVAN_SUMMONS];
+         bool headNorth;
++        uint32 _followCheckTimer = 2000;
+ 
+         ObjectGuid _playerGUID;
+         uint32 _faction;
+@@ -232,6 +233,30 @@ public:
+                 }
+         }
+ 
++        // Summons made without a SummonProperties entry have no owner, so once one of them has
++        // fought (or evaded) it goes to its home position and stays there instead of following
++        // Cork again. SummonsFollow() only ran at the stops, so re-issue the follow for any
++        // summon that is out of combat and no longer following.
++        void RefollowSummons()
++        {
++            float dist = 1.0f;
++            for (uint8 i = 0; i < MAX_CARAVAN_SUMMONS; ++i)
++            {
++                if (Creature* summon = ObjectAccessor::GetCreature(*me, summons[i]))
++                {
++                    if (summon->IsAlive() && !summon->IsInCombat() &&
++                        summon->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
++                    {
++                        summon->ClearUnitState(UNIT_STATE_EVADE);
++                        summon->GetMotionMaster()->Clear(false);
++                        summon->StopMoving();
++                        summon->GetMotionMaster()->MoveFollow(me, dist, M_PI, MOTION_SLOT_ACTIVE);
++                    }
++                    dist += (i == 1 ? 9.5f : 3.0f);
++                }
++            }
++        }
++
+         void RelocateSummons()
+         {
+             for (uint8 i = 0; i < MAX_CARAVAN_SUMMONS; ++i)
+@@ -379,6 +404,15 @@ public:
+ 
+         void UpdateEscortAI(uint32 diff) override
+         {
++            if (_followCheckTimer <= diff)
++            {
++                _followCheckTimer = 2000;
++                if (!me->IsInCombat())
++                    RefollowSummons();
++            }
++            else
++                _followCheckTimer -= diff;
++
+             events.Update(diff);
+             switch (events.ExecuteEvent())
+             {

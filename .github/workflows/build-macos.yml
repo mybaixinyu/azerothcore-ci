@@ -90,12 +90,17 @@ jobs:
             -DREADLINE_INCLUDE_DIR=/opt/homebrew/opt/readline/include \
             -DREADLINE_LIBRARY=/opt/homebrew/opt/readline/lib/libreadline.dylib
 
+      # The ccache statistics live in the cache directory and accumulate across runs;
+      # zero them so the report below describes this build only.
+      - name: Reset ccache statistics
+        run: ccache -z
+
       - name: Build
         run: cmake --build build -j"$(sysctl -n hw.ncpu)"
 
       # Read the hit rate here rather than inferring it from the wall clock.
       - name: ccache stats
-        run: ccache -s
+        run: ccache -sv
 
       - name: Install
         run: |

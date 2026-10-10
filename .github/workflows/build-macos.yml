@@ -9,10 +9,13 @@ on:
       module_ref:
         description: 'mod-playerbots/mod-playerbots ref'
         default: 'master'
+      bridge_ref:
+        description: 'Aldori15/mod-questie-bridge ref'
+        default: 'main'
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: xcode-27
     env:
       # Only a staging layout: patch 0002 makes the binaries find their configs
       # and OpenSSL provider relative to where they are run from, so nothing
@@ -42,6 +45,14 @@ jobs:
           ref: ${{ inputs.module_ref }}
           path: src/modules/mod-playerbots
 
+      # Server side of the Questie-335 addon; pure script module, no SQL.
+      - name: Checkout questie bridge module
+        uses: actions/checkout@v7
+        with:
+          repository: Aldori15/mod-questie-bridge
+          ref: ${{ inputs.bridge_ref }}
+          path: src/modules/mod-questie-bridge
+
       # Left uncommitted on purpose: the worldserver revision banner then carries
       # the '+' suffix that marks a patched tree, exactly like a local build.
       - name: Apply patches
@@ -64,10 +75,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache:macos-15:${{ inputs.core_ref }}:${{ github.run_id }}
+          key: ccache:xcode-27:${{ inputs.core_ref }}:${{ github.run_id }}
           restore-keys: |
-            ccache:macos-15:${{ inputs.core_ref }}:
-            ccache:macos-15:
+            ccache:xcode-27:${{ inputs.core_ref }}:
+            ccache:xcode-27:
 
       # Flags mirror the local build; keep the two in step when either changes.
       - name: Configure
@@ -140,10 +151,11 @@ jobs:
         run: |
           {
             echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "runner=macos-15 $(sw_vers -productVersion) $(uname -m)"
+            echo "runner=${{ runner.name }} macOS $(sw_vers -productVersion) $(uname -m) xcode=$(xcodebuild -version | head -1)"
             echo "compiler=$(c++ --version | head -1)"
             echo "core_ref=${{ inputs.core_ref }} $(git -C src rev-parse HEAD)"
             echo "module_ref=${{ inputs.module_ref }} $(git -C src/modules/mod-playerbots rev-parse HEAD)"
+            echo "bridge_ref=${{ inputs.bridge_ref }} $(git -C src/modules/mod-questie-bridge rev-parse HEAD)"
             echo "ci_commit=$(git -C ci rev-parse HEAD)"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"

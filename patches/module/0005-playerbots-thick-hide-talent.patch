@@ -1,0 +1,124 @@
+diff --git a/src/Ai/Base/Actions/LfgActions.cpp b/src/Ai/Base/Actions/LfgActions.cpp
+index dedc79c..a52f68c 100644
+--- a/src/Ai/Base/Actions/LfgActions.cpp
++++ b/src/Ai/Base/Actions/LfgActions.cpp
+@@ -36,7 +36,7 @@ uint32 LfgJoinAction::GetRoles()
+         case CLASS_DRUID:
+             if (spec == 2)
+                 return PLAYER_ROLE_HEALER;
+-            else if (spec == 1 && bot->HasAura(16931) /* thick hide */)
++            else if (spec == 1 && bot->HasTalent(16931, bot->GetActiveSpec()) /* thick hide */)
+                 return PLAYER_ROLE_TANK;
+             else
+                 return PLAYER_ROLE_DAMAGE;
+diff --git a/src/Ai/Class/Druid/Strategy/FeralDruidStrategy.cpp b/src/Ai/Class/Druid/Strategy/FeralDruidStrategy.cpp
+index acb7d1e..467c9bc 100644
+--- a/src/Ai/Class/Druid/Strategy/FeralDruidStrategy.cpp
++++ b/src/Ai/Class/Druid/Strategy/FeralDruidStrategy.cpp
+@@ -95,7 +95,7 @@ void FeralChargeDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+ {
+     Player* bot = botAI->GetBot();
+ 
+-    if (bot->HasSpell(SPELL_CAT_FORM) && !bot->HasAura(AURA_THICK_HIDE))
++    if (bot->HasSpell(SPELL_CAT_FORM) && !bot->HasTalent(AURA_THICK_HIDE, bot->GetActiveSpec()))
+         triggers.push_back(new TriggerNode(
+             "enemy out of melee", { NextAction("feral charge - cat", 29.0f) }));
+     else
+diff --git a/src/Ai/Class/Druid/Strategy/GenericDruidStrategy.cpp b/src/Ai/Class/Druid/Strategy/GenericDruidStrategy.cpp
+index f973060..fac5c2e 100644
+--- a/src/Ai/Class/Druid/Strategy/GenericDruidStrategy.cpp
++++ b/src/Ai/Class/Druid/Strategy/GenericDruidStrategy.cpp
+@@ -62,7 +62,7 @@ void GenericDruidStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+ 
+     if (tab == DRUID_TAB_FERAL)
+     {
+-        if (!bot->HasAura(16931) /*thick hide — bear spec*/)
++        if (!bot->HasTalent(16931, bot->GetActiveSpec()) /*thick hide — bear spec*/)
+         {
+             triggers.push_back(new TriggerNode("predator's swiftness and combat party member dead",
+                                                { NextAction("rebirth", 29.0f) }));
+@@ -125,7 +125,7 @@ void DruidCcStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+     }
+     if (tab == DRUID_TAB_FERAL)
+     {
+-        if (bot->HasSpell(SPELL_CAT_FORM) && !bot->HasAura(AURA_THICK_HIDE))
++        if (bot->HasSpell(SPELL_CAT_FORM) && !bot->HasTalent(AURA_THICK_HIDE, bot->GetActiveSpec()))
+         {
+             triggers.push_back(new TriggerNode(
+                 "predator's swiftness and cyclone", { NextAction("cyclone on cc", 42.0f) }));
+@@ -181,7 +181,7 @@ void DruidAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+         triggers.push_back(new TriggerNode("moonfire on attacker", { NextAction("moonfire on attacker", 5.1f) }));
+     }
+ 
+-    if (tab == DRUID_TAB_FERAL && bot->HasSpell(SPELL_CAT_FORM) && !bot->HasAura(AURA_THICK_HIDE))
++    if (tab == DRUID_TAB_FERAL && bot->HasSpell(SPELL_CAT_FORM) && !bot->HasTalent(AURA_THICK_HIDE, bot->GetActiveSpec()))
+     {
+         triggers.push_back(new TriggerNode("clearcasting and medium aoe", { NextAction("swipe (cat)", 25.5f) }));
+         triggers.push_back(new TriggerNode("medium aoe", { NextAction("swipe (cat)", 25.0f) }));
+diff --git a/src/Bot/Factory/AiFactory.cpp b/src/Bot/Factory/AiFactory.cpp
+index f9718ae..d5bdf07 100644
+--- a/src/Bot/Factory/AiFactory.cpp
++++ b/src/Bot/Factory/AiFactory.cpp
+@@ -357,7 +357,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
+                 engine->addStrategiesNoInit("resto", "cure", "dps assist", "tranquility", nullptr);
+             else
+             {
+-                if (player->HasSpell(SPELL_CAT_FORM) && !player->HasAura(SPELL_DRUID_THICK_HIDE))
++                if (player->HasSpell(SPELL_CAT_FORM) && !player->HasTalent(SPELL_DRUID_THICK_HIDE, player->GetActiveSpec()))
+                     engine->addStrategiesNoInit("cat", "aoe", "cc", "dps assist", "feral charge", nullptr);
+                 else
+                     engine->addStrategiesNoInit("bear", "tank assist", "pull", "pull back", "feral charge", nullptr);
+@@ -547,7 +547,7 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
+         case CLASS_DRUID:
+             if (tab == DRUID_TAB_FERAL)
+             {
+-                if (player->GetLevel() >= 20 && !player->HasAura(SPELL_DRUID_THICK_HIDE))
++                if (player->GetLevel() >= 20 && !player->HasTalent(SPELL_DRUID_THICK_HIDE, player->GetActiveSpec()))
+                     nonCombatEngine->addStrategy("dps assist", false);
+                 else
+                     nonCombatEngine->addStrategiesNoInit("tank assist", "pull", nullptr);
+diff --git a/src/Bot/Factory/PlayerbotFactory.cpp b/src/Bot/Factory/PlayerbotFactory.cpp
+index eeba818..86657f8 100644
+--- a/src/Bot/Factory/PlayerbotFactory.cpp
++++ b/src/Bot/Factory/PlayerbotFactory.cpp
+@@ -1718,7 +1718,17 @@ uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_temp
+         /// @todo: fix cat druid hardcode
+         if (bot->getClass() == CLASS_DRUID && specTab == DRUID_TAB_FERAL && bot->GetLevel() >= 20)
+         {
+-            bool isCat = !bot->HasAura(SPELL_DRUID_THICK_HIDE);
++            // The talent, not its passive aura: the aura is missing at some level-ups (cause not yet known)
++            // and the bot then rebuilt a bear as a cat.
++            bool hasThickHide = bot->HasTalent(SPELL_DRUID_THICK_HIDE, bot->GetActiveSpec());
++            if (hasThickHide != bot->HasAura(SPELL_DRUID_THICK_HIDE))
++                LOG_INFO("playerbots",
++                         "Bot {} level {}: Thick Hide talent {} but aura {} (alive {}, in world {}, teleporting {}, "
++                         "form {}, taxi {}, map {})",
++                         bot->GetName(), bot->GetLevel(), hasThickHide, !hasThickHide, bot->IsAlive(),
++                         bot->IsInWorld(), bot->IsBeingTeleported(), uint32(bot->GetShapeshiftForm()),
++                         bot->IsInFlight(), bot->GetMapId());
++            bool isCat = !hasThickHide;
+             if (!isCat && bot->GetLevel() == 20)
+             {
+                 uint32 bearP = sPlayerbotAIConfig.RandomClassSpecProb[cls][1];
+@@ -4657,7 +4667,7 @@ void PlayerbotFactory::InitGlyphs(bool increment)
+     if (bot->getClass() == CLASS_DRUID)
+     {
+         // Cat PvE (spec index 3): If the bot is Feral spec, level 20 or higher, and does NOT have the Thick Hide talent
+-        if (tab == DRUID_TAB_FERAL && bot->GetLevel() >= 20 && !bot->HasAura(SPELL_DRUID_THICK_HIDE))
++        if (tab == DRUID_TAB_FERAL && bot->GetLevel() >= 20 && !bot->HasTalent(SPELL_DRUID_THICK_HIDE, bot->GetActiveSpec()))
+             tab = 3;
+         // Balance PvP (spec index 4): If the bot has the Owlkin Frenzy talent
+         else if (bot->HasAura(SPELL_OWLKIN_FRENZY))
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index bad14a5..f1f2048 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
+@@ -2395,7 +2395,7 @@ bool PlayerbotAI::IsTank(Player* player, bool bySpec)
+             break;
+         case CLASS_DRUID:
+             if (tab == DRUID_TAB_FERAL && (player->GetShapeshiftForm() == FORM_BEAR ||
+-                                           player->GetShapeshiftForm() == FORM_DIREBEAR || player->HasAura(16931)))
++                                           player->GetShapeshiftForm() == FORM_DIREBEAR || player->HasTalent(16931, player->GetActiveSpec())))
+             {
+                 return true;
+             }

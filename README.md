@@ -82,6 +82,14 @@ build instead of being silently skipped.
   inside the module checkout, not the core. Upstream
   has no fix; related open issues: mod-playerbots#1771, #1772. Drop this patch if
   the module gains its own handling.
+- `module/0005-playerbots-thick-hide-talent.patch` — every bear/cat decision for a
+  feral druid (level-up talent rebuild, combat and non-combat strategies, `IsTank`,
+  LFG role, druid triggers) asks `HasTalent(16931)` instead of `HasAura(16931)`.
+  The aura was missing at some level-ups, so a bear with Thick Hide 3/3 was rebuilt
+  from the cat template (5 of 28 observed level-up intervals). The level-up check
+  logs `Thick Hide talent ... but aura ...` with the bot's state whenever the two
+  disagree, to find out when the aura goes missing. Upstream marks the check
+  `@todo: fix cat druid hardcode`; no issue filed yet.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

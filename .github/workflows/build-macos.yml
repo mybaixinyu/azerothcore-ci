@@ -12,6 +12,13 @@ on:
       bridge_ref:
         description: 'Aldori15/mod-questie-bridge ref'
         default: 'main'
+      sanitizer:
+        description: 'none, or thread for a ThreadSanitizer build (separate artifact, never installed over bin/)'
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - thread
 
 jobs:
   build:
@@ -24,6 +31,8 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: 'true'
+      # Kept apart from the release build's cache and artifact name
+      SAN_SUFFIX: ${{ inputs.sanitizer == 'thread' && '-tsan' || '' }}
 
     steps:
       - name: Checkout CI repo
@@ -66,6 +75,9 @@ jobs:
             git -C src/modules/mod-playerbots apply --verbose "$p"
           done
 
+      - name: Check patch 0007's opcode list matches the module
+        run: ci/scripts/check-bot-outgoing-opcodes.sh src/modules/mod-playerbots
+
       - name: Install dependencies
         run: |
           brew update --quiet
@@ -75,15 +87,20 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache:xcode-27:${{ inputs.core_ref }}:${{ github.run_id }}
+          key: ccache:xcode-27${{ env.SAN_SUFFIX }}:${{ inputs.core_ref }}:${{ github.run_id }}
           restore-keys: |
-            ccache:xcode-27:${{ inputs.core_ref }}:
-            ccache:xcode-27:
+            ccache:xcode-27${{ env.SAN_SUFFIX }}:${{ inputs.core_ref }}:
+            ccache:xcode-27${{ env.SAN_SUFFIX }}:
 
       # Flags mirror the local build; keep the two in step when either changes.
       - name: Configure
         run: |
-          cmake -S src -B build -G Ninja \
+          san=()
+          if [ "${{ inputs.sanitizer }}" = thread ]; then
+            san=(-DCMAKE_C_FLAGS="-fsanitize=thread -g" -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
+                 -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread)
+          fi
+          cmake -S src -B build -G Ninja "${san[@]}" \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
             -DAPPS_BUILD=all \
@@ -122,6 +139,18 @@ jobs:
       - name: Bundle dylibs
         run: ci/scripts/bundle-dylibs.sh "$GITHUB_WORKSPACE/out/bin"
 
+      # The TSan runtime is an @rpath dylib from the Xcode toolchain, absent on the server machine
+      - name: Bundle the ThreadSanitizer runtime
+        if: inputs.sanitizer == 'thread'
+        run: |
+          rt="$(xcrun clang -print-resource-dir)/lib/darwin/libclang_rt.tsan_osx_dynamic.dylib"
+          cp "$rt" out/bin/lib/
+          codesign --force -s - out/bin/lib/libclang_rt.tsan_osx_dynamic.dylib
+          for b in worldserver authserver; do
+            install_name_tool -add_rpath @executable_path/lib "out/bin/$b"
+            codesign --force -s - "out/bin/$b"
+          done
+
       # The DB updater reads its SQL from SourceDirectory, which on the server
       # machine points at the copy installed from here. base/ (fresh-install
       # dumps) and old/ (pre-3.3.5 history) are not in updates_include, so the
@@ -153,6 +182,7 @@ jobs:
             echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "runner=${{ runner.name }} macOS $(sw_vers -productVersion) $(uname -m) xcode=$(xcodebuild -version | head -1)"
             echo "compiler=$(c++ --version | head -1)"
+            echo "sanitizer=${{ inputs.sanitizer }}"
             echo "core_ref=${{ inputs.core_ref }} $(git -C src rev-parse HEAD)"
             echo "module_ref=${{ inputs.module_ref }} $(git -C src/modules/mod-playerbots rev-parse HEAD)"
             echo "bridge_ref=${{ inputs.bridge_ref }} $(git -C src/modules/mod-questie-bridge rev-parse HEAD)"
@@ -179,7 +209,7 @@ jobs:
 
       - uses: actions/upload-artifact@v5
         with:
-          name: server-pb-macos-arm64
+          name: server-pb-macos-arm64${{ env.SAN_SUFFIX }}
           path: stage/opt/azerothcore-pb/
           retention-days: 30
           if-no-files-found: error

@@ -1,0 +1,152 @@
+diff --git a/src/Ai/Raid/Hyjal/Util/HyjalScripts.cpp b/src/Ai/Raid/Hyjal/Util/HyjalScripts.cpp
+index c4565c5..0408227 100644
+--- a/src/Ai/Raid/Hyjal/Util/HyjalScripts.cpp
++++ b/src/Ai/Raid/Hyjal/Util/HyjalScripts.cpp
+@@ -8,6 +8,7 @@
+ #include "HyjalHelpers.h"
+ #include "Player.h"
+ #include "Playerbots.h"
++#include "RaidStateLock.h"
+ #include "ScriptMgr.h"
+ #include "Spell.h"
+ 
+@@ -85,6 +86,7 @@ public:
+         if (!target)
+             return;
+ 
++        std::unique_lock<std::recursive_mutex> const raidStateGuard = RaidStateLock::Lock(caster->GetMapId());
+         archimondeAirBurstTargets[caster->GetInstanceId()] =
+             AirBurstData{ target->GetGUID(), getMSTime() };
+ 
+diff --git a/src/Ai/Raid/Mag/Util/MagScripts.cpp b/src/Ai/Raid/Mag/Util/MagScripts.cpp
+index ff78f11..4d670e7 100644
+--- a/src/Ai/Raid/Mag/Util/MagScripts.cpp
++++ b/src/Ai/Raid/Mag/Util/MagScripts.cpp
+@@ -9,6 +9,7 @@
+ #include "DynamicObjectScript.h"
+ #include "MagHelpers.h"
+ #include "Playerbots.h"
++#include "RaidStateLock.h"
+ 
+ using namespace MagHelpers;
+ 
+@@ -37,6 +38,7 @@ private:
+     // To account for Blast Nova delay caused by Quake's DelayAll.
+     void HandleQuake(Unit* caster)
+     {
++        std::unique_lock<std::recursive_mutex> const raidStateGuard = RaidStateLock::Lock(caster->GetMapId());
+         auto it = blastNovaTimer.find(caster->GetInstanceId());
+         if (it != blastNovaTimer.end())
+             it->second += QUAKE_DELAY_MS;
+@@ -46,6 +48,7 @@ private:
+     // interrupt request is needed to get them to cancel mid-cast when Blast Nova starts.
+     void HandleBlastNova(Unit* caster)
+     {
++        std::unique_lock<std::recursive_mutex> const raidStateGuard = RaidStateLock::Lock(caster->GetMapId());
+         Map::PlayerList const& players = caster->GetMap()->GetPlayers();
+         for (Map::PlayerList::const_iterator it = players.begin(); it != players.end(); ++it)
+         {
+diff --git a/src/Ai/Raid/RaidStateLock.cpp b/src/Ai/Raid/RaidStateLock.cpp
+new file mode 100644
+index 0000000..d29d759
+--- /dev/null
++++ b/src/Ai/Raid/RaidStateLock.cpp
+@@ -0,0 +1,29 @@
++/*
++ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
++ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
++ * or (at your option) any later version.
++ */
++
++#include "RaidStateLock.h"
++
++namespace
++{
++    struct RaidLock
++    {
++        uint32 mapId;
++        std::recursive_mutex mutex;
++    };
++
++    // Raids whose helper tables have no lock of their own: Karazhan, Hyjal Summit, Magtheridon's Lair, Tempest Keep,
++    // Black Temple, Zul'Aman, Ulduar, Ruby Sanctum
++    RaidLock raidLocks[] = {{532, {}}, {534, {}}, {544, {}}, {550, {}}, {564, {}}, {568, {}}, {603, {}}, {724, {}}};
++}
++
++std::unique_lock<std::recursive_mutex> RaidStateLock::Lock(uint32 mapId)
++{
++    for (RaidLock& raid : raidLocks)
++        if (raid.mapId == mapId)
++            return std::unique_lock<std::recursive_mutex>(raid.mutex);
++
++    return {};
++}
+diff --git a/src/Ai/Raid/RaidStateLock.h b/src/Ai/Raid/RaidStateLock.h
+new file mode 100644
+index 0000000..c1192d3
+--- /dev/null
++++ b/src/Ai/Raid/RaidStateLock.h
+@@ -0,0 +1,22 @@
++/*
++ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
++ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
++ * or (at your option) any later version.
++ */
++
++#ifndef PLAYERBOTS_RAIDSTATELOCK_H
++#define PLAYERBOTS_RAIDSTATELOCK_H
++
++#include "Define.h"
++#include <mutex>
++
++// The helpers of some raids keep their per-instance state in tables shared by every instance of that raid, and two
++// instances can update on different map threads. Everything that reaches those tables runs under the raid's lock: the
++// bots' AI update on the raid's map and the raid's spell listener scripts.
++namespace RaidStateLock
++{
++    // Holds the lock of the raid on mapId, or nothing when that map's helpers need none
++    std::unique_lock<std::recursive_mutex> Lock(uint32 mapId);
++}
++
++#endif
+diff --git a/src/Ai/Raid/TK/Util/TKScripts.cpp b/src/Ai/Raid/TK/Util/TKScripts.cpp
+index 324379e..6a04ec1 100644
+--- a/src/Ai/Raid/TK/Util/TKScripts.cpp
++++ b/src/Ai/Raid/TK/Util/TKScripts.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "ObjectAccessor.h"
+ #include "Player.h"
++#include "RaidStateLock.h"
+ #include "ScriptMgr.h"
+ #include "Spell.h"
+ #include "Timer.h"
+@@ -35,6 +36,7 @@ public:
+         if (!target)
+             return;
+ 
++        std::unique_lock<std::recursive_mutex> const raidStateGuard = RaidStateLock::Lock(caster->GetMapId());
+         auto& orbs = voidReaverArcaneOrbs[caster->GetInstanceId()];
+         uint32 const now = getMSTime();
+ 
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index e2910dc..33f7024 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
+@@ -39,6 +39,7 @@
+ #include "PlayerbotMgr.h"
+ #include "PlayerbotTextMgr.h"
+ #include "PlayerbotThreadContext.h"
++#include "RaidStateLock.h"
+ #include "Playerbots.h"
+ #include "PositionValue.h"
+ #include "RBAC.h"
+@@ -272,6 +273,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
+         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
+         return;
+ 
++    std::unique_lock<std::recursive_mutex> const raidStateGuard = RaidStateLock::Lock(bot->GetMapId());
++
+     HandleDeferredChatPackets();
+ 
+     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test

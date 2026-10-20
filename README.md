@@ -158,6 +158,23 @@ build instead of being silently skipped.
   and lookup results are unchanged. Not covered: `IsUsedBySkill` caches by item only, so
   an item used by any profession counts as used by all of them; that is not a threading
   problem and is left as it is.
+- `module/0012-playerbots-shared-runtime-state.patch` — fourth part, the random-bot
+  manager state that bot actions write from their map threads. The per-bot event cache
+  (spec, price multipliers, trade discounts, randomize/teleport/revive timers), read and
+  written by item usage, loot, trade, talent and maintenance actions, gets a mutex; values
+  are copied out under it and the database writes stay outside. The battleground queue
+  counters the join actions read and increment get a mutex of their own (the world-thread
+  `CheckBgQueue` needs none). Battle-master, LFG-dungeon and addclass lookups use `find`
+  instead of `operator[]`, which inserted missing keys. The guild cache is written by
+  randomization on map threads and is left to the randomization change.
+- `module/0013-playerbots-raid-state-lock.patch` — fifth part, the encounter helpers of
+  Karazhan, Hyjal, Magtheridon, Tempest Keep, Black Temple, Zul'Aman, Ulduar and Ruby
+  Sanctum, which keep per-instance state in 38 unlocked tables shared by every instance
+  of the raid. Each of those raids gets a recursive mutex, held for a bot's whole AI update
+  on that raid's map and by the three spell listener scripts that write the tables, so
+  the 189 places that use them are unchanged. Two instances of the same raid now take
+  turns; nothing else ever waits. ICC, SSC, Naxxramas and the Ruby Sanctum instance state
+  already had locks and are untouched.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

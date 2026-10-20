@@ -1,0 +1,195 @@
+diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+index 2930972..58f019c 100644
+--- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
++++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+@@ -239,6 +239,8 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
+     if (bot->GetGroup() && !bot->GetGroup()->IsLeader(bot->GetGUID()))
+         return false;
+ 
++    std::lock_guard<std::mutex> guard(sRandomPlayerbotMgr.BattlegroundDataLock);
++
+     // Check if bots should join Arena
+     ArenaType type = ArenaType(BattlegroundMgr::BGArenaType(queueTypeId));
+     if (type != ARENA_TYPE_NONE)
+@@ -512,6 +514,7 @@ bool BGJoinAction::JoinQueue(uint32 type)
+              : isArena ? "Arena"
+                        : "");
+ 
++    std::unique_lock<std::mutex> countGuard(sRandomPlayerbotMgr.BattlegroundDataLock);
+     if (isArena)
+     {
+         if (!isRated)
+@@ -535,6 +538,7 @@ bool BGJoinAction::JoinQueue(uint32 type)
+             sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].bgHordeBotCount +=
+                 bot->GetGroup()->GetMembersCount();
+     }
++    countGuard.unlock();
+ 
+     botAI->GetAiObjectContext()->GetValue<uint32>("bg type")->Set(0);
+ 
+@@ -570,6 +574,8 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
+     if (bot->GetGroup() && !bot->GetGroup()->IsLeader(bot->GetGUID()))
+         return false;
+ 
++    std::lock_guard<std::mutex> guard(sRandomPlayerbotMgr.BattlegroundDataLock);
++
+     // Check if bots should join Arena
+     ArenaType type = ArenaType(BattlegroundMgr::BGArenaType(queueTypeId));
+     if (type != ARENA_TYPE_NONE)
+@@ -948,11 +954,15 @@ bool BGStatusAction::Execute(Event event)
+         {
+             //TeamId teamId = bot->GetTeamId(); //not used, line marked for removal.
+             bool realPlayers = false;
+-            if (isRated)
+-                realPlayers = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].ratedArenaPlayerCount > 0;
+-            else
+-                realPlayers =
+-                    sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].skirmishArenaPlayerCount > 0;
++            {
++                std::lock_guard<std::mutex> guard(sRandomPlayerbotMgr.BattlegroundDataLock);
++                if (isRated)
++                    realPlayers =
++                        sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].ratedArenaPlayerCount > 0;
++                else
++                    realPlayers =
++                        sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].skirmishArenaPlayerCount > 0;
++            }
+ 
+             if (realPlayers)
+                 return false;
+diff --git a/src/Ai/Base/Actions/LfgActions.cpp b/src/Ai/Base/Actions/LfgActions.cpp
+index a588fe2..3972d8f 100644
+--- a/src/Ai/Base/Actions/LfgActions.cpp
++++ b/src/Ai/Base/Actions/LfgActions.cpp
+@@ -124,7 +124,11 @@ bool LfgJoinAction::JoinLFG()
+     LfgDungeonSet list;
+     std::vector<uint32> selected;
+ 
+-    std::vector<uint32> dungeons = RandomPlayerbotMgr::instance().LfgDungeons[bot->GetTeamId()];
++    // Read on map threads, so a missing team is not inserted
++    auto const teamDungeons = RandomPlayerbotMgr::instance().LfgDungeons.find(bot->GetTeamId());
++    std::vector<uint32> dungeons;
++    if (teamDungeons != RandomPlayerbotMgr::instance().LfgDungeons.end())
++        dungeons = teamDungeons->second;
+     if (!dungeons.size())
+         return false;
+ 
+diff --git a/src/Bot/RandomPlayerbotMgr.cpp b/src/Bot/RandomPlayerbotMgr.cpp
+index 2a92e58..e4f72fd 100644
+--- a/src/Bot/RandomPlayerbotMgr.cpp
++++ b/src/Bot/RandomPlayerbotMgr.cpp
+@@ -2287,8 +2287,9 @@ bool RandomPlayerbotMgr::IsAddclassBot(ObjectGuid::LowType bot)
+ 
+         for (uint8 isAlliance = 0; isAlliance <= 1; isAlliance++)
+         {
+-            if (addclassCache[GetTeamClassIdx(isAlliance, claz)].find(guid) !=
+-                addclassCache[GetTeamClassIdx(isAlliance, claz)].end())
++            // Read from map threads too, so a missing class is not inserted
++            auto const cached = addclassCache.find(GetTeamClassIdx(isAlliance, claz));
++            if (cached != addclassCache.end() && cached->second.contains(guid))
+             {
+                 return true;
+             }
+@@ -2414,6 +2415,7 @@ bool RandomPlayerbotMgr::IsSpecPvp(uint32 bot, uint8 cls)
+ 
+ uint32 RandomPlayerbotMgr::GetEventValue(uint32 bot, std::string const& event)
+ {
++    std::lock_guard<std::mutex> guard(eventCacheLock);
+     if (CachedEvent* e = FindEvent(bot, event))
+         return e->value;
+ 
+@@ -2422,6 +2424,7 @@ uint32 RandomPlayerbotMgr::GetEventValue(uint32 bot, std::string const& event)
+ 
+ std::string RandomPlayerbotMgr::GetEventData(uint32 bot, std::string const& event)
+ {
++    std::lock_guard<std::mutex> guard(eventCacheLock);
+     if (CachedEvent* e = FindEvent(bot, event))
+         return e->data;
+ 
+@@ -2461,6 +2464,7 @@ uint32 RandomPlayerbotMgr::SetEventValue(uint32 bot, std::string const& event, u
+     PlayerbotsDatabase.CommitTransaction(trans);
+ 
+     // Update in-memory cache
++    std::lock_guard<std::mutex> guard(eventCacheLock);
+     BotEventCache& cache = eventCache[bot];
+     cache.loaded = true;
+ 
+@@ -2517,7 +2521,10 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
+     if (cmd == "reset")
+     {
+         PlayerbotsDatabase.Execute(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_RANDOM_BOTS));
+-        sRandomPlayerbotMgr.eventCache.clear();
++        {
++            std::lock_guard<std::mutex> guard(sRandomPlayerbotMgr.eventCacheLock);
++            sRandomPlayerbotMgr.eventCache.clear();
++        }
+         LOG_INFO("playerbots", "Random bots were reset for all players. Please restart the Server.");
+         return true;
+     }
+@@ -3182,7 +3189,10 @@ void RandomPlayerbotMgr::Remove(Player* bot)
+     PlayerbotsDatabase.Execute(stmt);
+ 
+     uint32 botId = owner.GetCounter();
+-    eventCache.erase(botId);
++    {
++        std::lock_guard<std::mutex> guard(eventCacheLock);
++        eventCache.erase(botId);
++    }
+ 
+     LogoutPlayerBot(owner);
+ }
+@@ -3206,16 +3216,16 @@ ObjectGuid RandomPlayerbotMgr::GetBattleMasterGUID(Player* bot, BattlegroundType
+     TeamId team = bot->GetTeamId();
+     std::vector<uint32> Bms;
+ 
+-    for (auto i = std::begin(BattleMastersCache[team][bgTypeId]); i != std::end(BattleMastersCache[team][bgTypeId]);
+-         ++i)
++    // Bots on several maps look up battle masters at the same time, so a missing key is not inserted
++    for (TeamId const cacheTeam : {team, TEAM_NEUTRAL})
+     {
+-        Bms.insert(Bms.end(), *i);
+-    }
++        auto const teamMasters = BattleMastersCache.find(cacheTeam);
++        if (teamMasters == BattleMastersCache.end())
++            continue;
+ 
+-    for (auto i = std::begin(BattleMastersCache[TEAM_NEUTRAL][bgTypeId]);
+-         i != std::end(BattleMastersCache[TEAM_NEUTRAL][bgTypeId]); ++i)
+-    {
+-        Bms.insert(Bms.end(), *i);
++        auto const masters = teamMasters->second.find(bgTypeId);
++        if (masters != teamMasters->second.end())
++            Bms.insert(Bms.end(), masters->second.begin(), masters->second.end());
+     }
+ 
+     if (Bms.empty())
+diff --git a/src/Bot/RandomPlayerbotMgr.h b/src/Bot/RandomPlayerbotMgr.h
+index fca1d7c..56d1bcd 100644
+--- a/src/Bot/RandomPlayerbotMgr.h
++++ b/src/Bot/RandomPlayerbotMgr.h
+@@ -12,6 +12,7 @@
+ #include "ObjectGuid.h"
+ #include "PlayerbotCommandServer.h"
+ #include "PlayerbotMgr.h"
++#include <mutex>
+ #include <unordered_set>
+ 
+ struct BattlegroundInfo
+@@ -149,6 +150,8 @@ public:
+     CreatureData const* GetCreatureDataByEntry(uint32 entry);
+     void LoadBattleMastersCache();
+     std::map<uint32, std::map<uint32, BattlegroundInfo>> BattlegroundData;
++    // Bots on several maps read and count the queues at the same time; CheckBgQueue runs on the world thread
++    std::mutex BattlegroundDataLock;
+     std::map<uint32, std::map<uint32, std::map<TeamId, uint32>>> VisualBots;
+     std::map<uint32, std::map<uint32, std::map<uint32, uint32>>> Supporters;
+     std::map<TeamId, std::vector<uint32>> LfgDungeons;
+@@ -251,6 +254,8 @@ private:
+     std::map<TeamId, std::map<BattlegroundTypeId, std::vector<uint32>>> BattleMastersCache;
+     std::unordered_map<uint32, ObjectGuid::LowType> BattleMasterSpawnIds;
+     std::unordered_map<uint32, BotEventCache> eventCache;
++    // Bots on every map thread read and write their event values; FindEvent expects it held
++    std::mutex eventCacheLock;
+     std::unordered_set<uint32> currentBots;
+     uint32 playersLevel;
+ 

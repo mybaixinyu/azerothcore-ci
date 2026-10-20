@@ -99,38 +99,9 @@ build instead of being silently skipped.
   logs `Thick Hide talent ... but aura ...` with the bot's state whenever the two
   disagree, to find out when the aura goes missing. Upstream marks the check
   `@todo: fix cat druid hardcode`; no issue filed yet.
-- `module/0007-playerbots-ai-on-world-thread.patch` — makes `MapUpdate.Threads > 1`
-  safe for the module by running every bot's AI on the world thread, which never runs
-  while maps update, instead of in `OnPlayerAfterUpdate` on the map threads. Upstream
-  lets bot AI run on the map threads in parallel and fixes races one at a time; but the
-  AI writes cross-map state everywhere (groups, guilds, logins and logouts, shared caches
-  such as `RandomPlayerbotMgr::eventCache` and `PlayerbotTextMgr::botTexts`, which grow on
-  lookup), so that list does not end. Moving the AI leaves a bounded set: the hooks that
-  still fire on a map thread. Those that reach a bot on another map or module-wide
-  state now hand their work to the world thread (`PlayerbotThreadContext`). That covers
-  outgoing bot packets, chat commands, bot login and logout, Archimonde's and Void
-  Reaver's raid helper state, and level-up resets. The packet queues for a master's
-  packets are locked, and the command server on port 8888, which ran commands on its
-  own thread, now waits for the world thread to run them. Hooks that only touch bots
-  on their own map (raid spell listeners) or only read are left alone. A sample of the
-  single-threaded server with 1000 bots put the AI at about 10% of the map update, so
-  little parallelism is lost. The cost is a delay of up to one tick on packets and commands
-  that cross threads. Outgoing packets are copied only for the opcodes
-  `HandleBotOutgoingPacket` acts on; that list repeats its switch, and the build step
-  `scripts/check-bot-outgoing-opcodes.sh` fails when the two differ. Related upstream:
-  mod-playerbots#2474 (open), #1096, PR #2481 (closed). Drop this patch if upstream
-  makes the AI thread-safe on its own.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.
-
-## ThreadSanitizer builds
-
-`-f sanitizer=thread` builds with `-fsanitize=thread` and uploads
-`server-pb-macos-arm64-tsan` instead, with the TSan runtime bundled in `bin/lib`.
-`install-artifact.sh` only fetches the release artifact, so a TSan build cannot be
-installed over `bin/` by accident; unpack it into `server-pb/bin-tsan` and run it
-from there (the configs' `DataDir = "../data"` resolves the same way).
 
 ## Keeping the workflow honest
 

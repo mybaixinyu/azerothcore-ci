@@ -126,6 +126,23 @@ build instead of being silently skipped.
   `$Gmale:female;`, `$B` line breaks) are filled for the bot, each `$B` part told as
   its own line. Like the client, only the NPC text for the bot's gender is told, not
   both.
+- `module/0010-playerbots-cross-thread-hooks.patch` — second part, the hooks and threads
+  that reach a bot from outside its map. The three packet queues fed by `OnPacketSent`
+  and the master's packets get a lock; handling order is unchanged. Chat from a bot on
+  another map is copied into the receiving bot's queue and decided on its own next
+  update, but only when `MapUpdate.Threads > 1` and the sender is not the world thread,
+  so a single map thread behaves as before. `LogoutPlayerBot` called off the world
+  thread (timed logout in the AI, `hire`) queues a `LogoutPlayerBotOperation` instead
+  of deleting the bot inside `Map::Update`, which goes on to use the player
+  (`MarkNearbyCellsOf`) and lets other maps read the bot lists mid-erase; this applies
+  with one map thread too. The group strategy save it used to queue ran after the bot
+  was gone and never saved anything; it now runs inline before the logout. The arena
+  join that logs offline team members in uses the existing `AddPlayerBotOperation`, and
+  the command server port answers each request on the world thread (5 s timeout)
+  instead of reading bots from its own thread. The world thread is recorded in the
+  world update hook. Not covered: the whisper `logout` hotfix (mod-playerbots#1838) is a
+  re-entrancy problem on the world thread, not a threading one, and the level-reset hook
+  is disabled in this realm's config.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

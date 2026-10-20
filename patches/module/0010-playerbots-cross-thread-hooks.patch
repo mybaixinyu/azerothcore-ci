@@ -1,0 +1,691 @@
+diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+index b46b6bc..2930972 100644
+--- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
++++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+@@ -11,6 +11,8 @@
+ #include "Event.h"
+ #include "GroupMgr.h"
+ #include "PlayerbotAI.h"
++#include "PlayerbotOperations.h"
++#include "PlayerbotWorldThreadProcessor.h"
+ #include "Playerbots.h"
+ #include "PositionValue.h"
+ 
+@@ -81,8 +83,10 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
+         // if (!member && !sObjectMgr->GetPlayerAccountIdByGUID(itr->guid))
+         //     continue;
+ 
++        // Logging in touches the shared bot lists, which only the world thread may change
+         if (offline)
+-            sRandomPlayerbotMgr.AddPlayerBot(itr->Guid, 0);
++            PlayerbotWorldThreadProcessor::instance().QueueOperation(
++                std::make_unique<AddPlayerBotOperation>(itr->Guid, 0));
+ 
+         if (member)
+         {
+diff --git a/src/Bot/Cmd/PlayerbotCommandServer.cpp b/src/Bot/Cmd/PlayerbotCommandServer.cpp
+index 63029c1..e5fb89e 100644
+--- a/src/Bot/Cmd/PlayerbotCommandServer.cpp
++++ b/src/Bot/Cmd/PlayerbotCommandServer.cpp
+@@ -6,12 +6,16 @@
+ 
+ #include "PlayerbotCommandServer.h"
+ #include "IoContext.h"
++#include "PlayerbotOperation.h"
++#include "PlayerbotWorldThreadProcessor.h"
+ #include "RandomPlayerbotMgr.h"
+ #include <boost/asio.hpp>
+ #include <boost/bind.hpp>
+ #include <boost/smart_ptr.hpp>
+ #include <boost/thread/thread.hpp>
++#include <chrono>
+ #include <cstdlib>
++#include <future>
+ 
+ using boost::asio::ip::tcp;
+ typedef boost::shared_ptr<tcp::socket> socket_ptr;
+@@ -39,6 +43,53 @@ bool ReadLine(socket_ptr sock, std::string* buffer, std::string* line)
+     return true;
+ }
+ 
++namespace
++{
++    class RemoteCommandOperation : public PlayerbotOperation
++    {
++    public:
++        RemoteCommandOperation(std::string request, std::shared_ptr<std::promise<std::string>> answer)
++            : m_request(std::move(request)), m_answer(std::move(answer))
++        {
++        }
++
++        bool Execute() override
++        {
++            m_answer->set_value(RandomPlayerbotMgr::instance().HandleRemoteCommand(m_request));
++            return true;
++        }
++
++        std::string GetName() const override { return "RemoteCommand"; }
++
++    private:
++        std::string m_request;
++        std::shared_ptr<std::promise<std::string>> m_answer;
++    };
++
++    // The command reads bots that the world and map threads change; the world thread runs while no map updates
++    std::string AnswerOnWorldThread(std::string const& request)
++    {
++        auto answer = std::make_shared<std::promise<std::string>>();
++        std::future<std::string> result = answer->get_future();
++        if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(
++                std::make_unique<RemoteCommandOperation>(request, answer)))
++            return "busy";
++
++        if (result.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
++            return "timeout";
++
++        try
++        {
++            return result.get();
++        }
++        catch (std::future_error const&)
++        {
++            // Dropped unanswered: the queue was cleared on shutdown, or the command threw
++            return "failed";
++        }
++    }
++}
++
+ void session(socket_ptr sock)
+ {
+     try
+@@ -46,7 +97,7 @@ void session(socket_ptr sock)
+         std::string buffer, request;
+         while (ReadLine(sock, &buffer, &request))
+         {
+-            std::string const response = RandomPlayerbotMgr::instance().HandleRemoteCommand(request) + "\n";
++            std::string const response = AnswerOnWorldThread(request) + "\n";
+             boost::asio::write(*sock, boost::asio::buffer(response.c_str(), response.size()));
+             request = "";
+         }
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index f1f2048..34d5660 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
+@@ -38,6 +38,7 @@
+ #include "PlayerbotGuildMgr.h"
+ #include "PlayerbotMgr.h"
+ #include "PlayerbotTextMgr.h"
++#include "PlayerbotThreadContext.h"
+ #include "Playerbots.h"
+ #include "PositionValue.h"
+ #include "RBAC.h"
+@@ -94,10 +95,17 @@ void PacketHandlingHelper::AddHandler(uint16 opcode, std::string const handler)
+ 
+ void PacketHandlingHelper::Handle(ExternalEventHelper& helper)
+ {
+-    while (!queue.empty())
++    while (true)
+     {
+-        WorldPacket packet = queue.top();
+-        queue.pop(); // remove first so handling can't modify the queue while we're using it
++        WorldPacket packet;
++        {
++            std::lock_guard<std::mutex> guard(queueLock);
++            if (queue.empty())
++                break;
++
++            packet = std::move(queue.top());
++            queue.pop(); // remove first so handling can't modify the queue while we're using it
++        }
+ 
+         helper.HandlePacket(handlers, packet);
+     }
+@@ -111,7 +119,10 @@ void PacketHandlingHelper::AddPacket(WorldPacket const& packet)
+     // assert(packet);
+     // assert(packet.GetOpcode());
+     if (handlers.find(packet.GetOpcode()) != handlers.end())
++    {
++        std::lock_guard<std::mutex> guard(queueLock);
+         queue.push(WorldPacket(packet));
++    }
+ }
+ 
+ PlayerbotAI::PlayerbotAI()
+@@ -260,6 +271,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
+         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
+         return;
+ 
++    HandleDeferredChatPackets();
++
+     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
+     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
+     if (!bot->Unit::IsFalling())
+@@ -1253,122 +1266,18 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
+         }
+         case SMSG_MESSAGECHAT:  // do not react to self or if not ready to reply
+         {
+-            if (!sPlayerbotAIConfig.RandomBotTalk)
+-                return;
+-
+-            if (!AllowActivity())
+-                return;
+-
+-            WorldPacket p(packet);
+-            if (!p.empty() && (p.GetOpcode() == SMSG_MESSAGECHAT || p.GetOpcode() == SMSG_GM_MESSAGECHAT))
++            // A bot on another map may be speaking, and the reply reads and writes this bot's AI
++            if (PlayerbotThreadContext::OtherMapsMayRun())
+             {
+-                p.rpos(0);
+-                uint8 msgtype, chatTag;
+-                uint32 lang, textLen, unused;
+-                ObjectGuid guid1, guid2;
+-                std::string name = "";
+-                std::string chanName = "";
+-                std::string message = "";
+-
+-                p >> msgtype >> lang;
+-                p >> guid1 >> unused;
+-                if (guid1.IsEmpty() || p.size() > p.DEFAULT_SIZE)
+-                    return;
+-
+-                if (lang == LANG_ADDON)
+-                        return;
+-
+-                if (p.GetOpcode() == SMSG_GM_MESSAGECHAT)
+-                {
+-                    p >> textLen;
+-                    p >> name;
+-                }
+-
+-                switch (msgtype)
+-                {
+-                    case CHAT_MSG_CHANNEL:
+-                        p >> chanName;
+-                        [[fallthrough]];
+-                    case CHAT_MSG_SAY:
+-                    case CHAT_MSG_PARTY:
+-                    case CHAT_MSG_YELL:
+-                    case CHAT_MSG_WHISPER:
+-                    case CHAT_MSG_GUILD:
+-                        p >> guid2;
+-                        p >> textLen >> message >> chatTag;
+-                        break;
+-                    default:
+-                        return;
+-                }
++                std::lock_guard<std::mutex> guard(deferredChatLock);
++                // Replies are only ever a chance; the bound keeps a bot stuck out of the world from growing it
++                if (deferredChatPackets.size() < 100)
++                    deferredChatPackets.push_back(packet);
+ 
+-                if (chanName == "World")
+-                    return;
+-
+-                // do not reply to self but always try to reply to real player
+-                if (guid1 != bot->GetGUID())
+-                {
+-                    time_t lastChat = GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Get();
+-                    bool isPaused = time(0) < lastChat;
+-                    bool isFromFreeBot = false;
+-                    sCharacterCache->GetCharacterNameByGuid(guid1, name);
+-                    uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid1);
+-                    isFromFreeBot = sPlayerbotAIConfig.IsInRandomAccountList(accountId);
+-                    bool isMentioned = message.find(bot->GetName()) != std::string::npos;
+-
+-                    // ChatChannelSource chatChannelSource = GetChatChannelSource(bot, msgtype, chanName);
+-
+-                    // random bot speaks, chat CD
+-                    if (isFromFreeBot && isPaused)
+-                        return;
+-
+-                    // BG: react only if mentioned or if not channel and real player spoke
+-                    if (bot->InBattleground() && !(isMentioned || (msgtype != CHAT_MSG_CHANNEL && !isFromFreeBot)))
+-                        return;
+-
+-                    if (HasGameClientMaster() && guid1 != GetMaster()->GetGUID())
+-                        return;
+-
+-                    auto itemIds = GetChatHelper()->ExtractAllItemIds(message);
+-                    if (message.starts_with(sPlayerbotAIConfig.ToxicLinksPrefix) &&
+-                        (itemIds.size() > 0 || GetChatHelper()->ExtractAllQuestIds(message).size() > 0) &&
+-                        sPlayerbotAIConfig.ToxicLinksRepliesChance)
+-                    {
+-                        if (urand(0, 50) > 0 || urand(1, 100) > sPlayerbotAIConfig.ToxicLinksRepliesChance)
+-                            return;
+-                    }
+-                    else if (itemIds.count(19019) && sPlayerbotAIConfig.ThunderfuryRepliesChance)
+-                    {
+-                        if (urand(0, 60) > 0 || urand(1, 100) > sPlayerbotAIConfig.ThunderfuryRepliesChance)
+-                            return;
+-                    }
+-                    else
+-                    {
+-                        if (isFromFreeBot && urand(0, 20))
+-                            return;
+-
+-                        // if (msgtype == CHAT_MSG_GUILD && (!sPlayerbotAIConfig.GuildRepliesRate || urand(1, 100) >=
+-                        // sPlayerbotAIConfig.GuildRepliesRate)) return;
+-
+-                        if (!isFromFreeBot)
+-                        {
+-                            if (!isMentioned && urand(0, 4))
+-                                return;
+-                        }
+-                        else
+-                        {
+-                            if (urand(0, 20 + 10 * isMentioned))
+-                                return;
+-                        }
+-                    }
+-
+-                    QueueChatResponse(ChatQueuedReply{msgtype, guid1.GetCounter(), guid2.GetCounter(), message,
+-                                                      chanName, name,
+-                                                      time(nullptr) + urand(inCombat ? 10 : 5, inCombat ? 25 : 15)});
+-                    GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 25));
+-                    return;
+-                }
++                return;
+             }
+ 
++            HandleChatPacket(packet);
+             return;
+         }
+         case SMSG_FORCE_MOVE_ROOT:      // CMSG_FORCE_MOVE_ROOT_ACK
+@@ -1476,6 +1385,137 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
+     }
+ }
+ 
++void PlayerbotAI::HandleChatPacket(WorldPacket const& packet)
++{
++    if (!sPlayerbotAIConfig.RandomBotTalk)
++        return;
++
++    if (!AllowActivity())
++        return;
++
++    WorldPacket p(packet);
++    if (!p.empty() && (p.GetOpcode() == SMSG_MESSAGECHAT || p.GetOpcode() == SMSG_GM_MESSAGECHAT))
++    {
++        p.rpos(0);
++        uint8 msgtype, chatTag;
++        uint32 lang, textLen, unused;
++        ObjectGuid guid1, guid2;
++        std::string name = "";
++        std::string chanName = "";
++        std::string message = "";
++
++        p >> msgtype >> lang;
++        p >> guid1 >> unused;
++        if (guid1.IsEmpty() || p.size() > p.DEFAULT_SIZE)
++            return;
++
++        if (lang == LANG_ADDON)
++                return;
++
++        if (p.GetOpcode() == SMSG_GM_MESSAGECHAT)
++        {
++            p >> textLen;
++            p >> name;
++        }
++
++        switch (msgtype)
++        {
++            case CHAT_MSG_CHANNEL:
++                p >> chanName;
++                [[fallthrough]];
++            case CHAT_MSG_SAY:
++            case CHAT_MSG_PARTY:
++            case CHAT_MSG_YELL:
++            case CHAT_MSG_WHISPER:
++            case CHAT_MSG_GUILD:
++                p >> guid2;
++                p >> textLen >> message >> chatTag;
++                break;
++            default:
++                return;
++        }
++
++        if (chanName == "World")
++            return;
++
++        // do not reply to self but always try to reply to real player
++        if (guid1 != bot->GetGUID())
++        {
++            time_t lastChat = GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Get();
++            bool isPaused = time(0) < lastChat;
++            bool isFromFreeBot = false;
++            sCharacterCache->GetCharacterNameByGuid(guid1, name);
++            uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid1);
++            isFromFreeBot = sPlayerbotAIConfig.IsInRandomAccountList(accountId);
++            bool isMentioned = message.find(bot->GetName()) != std::string::npos;
++
++            // ChatChannelSource chatChannelSource = GetChatChannelSource(bot, msgtype, chanName);
++
++            // random bot speaks, chat CD
++            if (isFromFreeBot && isPaused)
++                return;
++
++            // BG: react only if mentioned or if not channel and real player spoke
++            if (bot->InBattleground() && !(isMentioned || (msgtype != CHAT_MSG_CHANNEL && !isFromFreeBot)))
++                return;
++
++            if (HasGameClientMaster() && guid1 != GetMaster()->GetGUID())
++                return;
++
++            auto itemIds = GetChatHelper()->ExtractAllItemIds(message);
++            if (message.starts_with(sPlayerbotAIConfig.ToxicLinksPrefix) &&
++                (itemIds.size() > 0 || GetChatHelper()->ExtractAllQuestIds(message).size() > 0) &&
++                sPlayerbotAIConfig.ToxicLinksRepliesChance)
++            {
++                if (urand(0, 50) > 0 || urand(1, 100) > sPlayerbotAIConfig.ToxicLinksRepliesChance)
++                    return;
++            }
++            else if (itemIds.count(19019) && sPlayerbotAIConfig.ThunderfuryRepliesChance)
++            {
++                if (urand(0, 60) > 0 || urand(1, 100) > sPlayerbotAIConfig.ThunderfuryRepliesChance)
++                    return;
++            }
++            else
++            {
++                if (isFromFreeBot && urand(0, 20))
++                    return;
++
++                // if (msgtype == CHAT_MSG_GUILD && (!sPlayerbotAIConfig.GuildRepliesRate || urand(1, 100) >=
++                // sPlayerbotAIConfig.GuildRepliesRate)) return;
++
++                if (!isFromFreeBot)
++                {
++                    if (!isMentioned && urand(0, 4))
++                        return;
++                }
++                else
++                {
++                    if (urand(0, 20 + 10 * isMentioned))
++                        return;
++                }
++            }
++
++            QueueChatResponse(ChatQueuedReply{msgtype, guid1.GetCounter(), guid2.GetCounter(), message,
++                                              chanName, name,
++                                              time(nullptr) + urand(inCombat ? 10 : 5, inCombat ? 25 : 15)});
++            GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 25));
++            return;
++        }
++    }
++}
++
++void PlayerbotAI::HandleDeferredChatPackets()
++{
++    std::vector<WorldPacket> packets;
++    {
++        std::lock_guard<std::mutex> guard(deferredChatLock);
++        packets.swap(deferredChatPackets);
++    }
++
++    for (WorldPacket const& packet : packets)
++        HandleChatPacket(packet);
++}
++
+ void PlayerbotAI::SpellInterrupted(uint32 spellid)
+ {
+     for (uint8 type = CURRENT_MELEE_SPELL; type <= CURRENT_CHANNELED_SPELL; type++)
+diff --git a/src/Bot/PlayerbotAI.h b/src/Bot/PlayerbotAI.h
+index da22f6e..ee27a26 100644
+--- a/src/Bot/PlayerbotAI.h
++++ b/src/Bot/PlayerbotAI.h
+@@ -24,6 +24,7 @@
+ #include "SpellAuras.h"
+ #include "Util.h"
+ #include "WorldPacket.h"
++#include <mutex>
+ #include <stack>
+ 
+ class Action;
+@@ -360,6 +361,8 @@ public:
+ private:
+     std::map<uint16, std::string> handlers;
+     std::stack<WorldPacket> queue;
++    // Packets are added from whichever thread sends them
++    std::mutex queueLock;
+ };
+ 
+ class ChatCommandHolder
+@@ -496,6 +499,8 @@ public:
+     bool Whisper(std::string const& msg, std::string const& receiverName);
+ 
+     void SpellInterrupted(uint32 spellid);
++    void HandleChatPacket(WorldPacket const& packet);
++    void HandleDeferredChatPackets();
+     int32 CalculateGlobalCooldown(uint32 spellid);
+     void RequestSpellInterrupt();
+     void RemoveAura(std::string const name);
+@@ -656,6 +661,9 @@ protected:
+     ChatHelper chatHelper;
+     std::list<ChatCommandHolder> chatCommands;
+     std::list<ChatQueuedReply> chatReplies;
++    // Chat sent from another map's thread, handled on the bot's own
++    std::vector<WorldPacket> deferredChatPackets;
++    std::mutex deferredChatLock;
+     PacketHandlingHelper botOutgoingPacketHandlers;
+     PacketHandlingHelper masterIncomingPacketHandlers;
+     PacketHandlingHelper masterOutgoingPacketHandlers;
+diff --git a/src/Bot/PlayerbotMgr.cpp b/src/Bot/PlayerbotMgr.cpp
+index 0d599cc..dce3d57 100644
+--- a/src/Bot/PlayerbotMgr.cpp
++++ b/src/Bot/PlayerbotMgr.cpp
+@@ -26,6 +26,7 @@
+ #include "PlayerbotRepository.h"
+ #include "PlayerbotSecurity.h"
+ #include "PlayerbotTextMgr.h"
++#include "PlayerbotThreadContext.h"
+ #include "PlayerbotWorldThreadProcessor.h"
+ #include "Playerbots.h"
+ #include "RandomPlayerbotMgr.h"
+@@ -399,9 +400,28 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
+         if (!botAI)
+             return;
+ 
+-        // Queue group cleanup operation for world thread
+-        auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid);
+-        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp));
++        // A map thread is in the middle of updating the bot and keeps using it after this returns, and other maps
++        // read the bot lists. Log out on the world thread, as the core does with players.
++        if (!PlayerbotThreadContext::IsWorldThread())
++        {
++            ObjectGuid masterGuid;
++            if (PlayerbotMgr* mgr = dynamic_cast<PlayerbotMgr*>(this))
++            {
++                if (!mgr->GetMaster())
++                    return;
++
++                masterGuid = mgr->GetMaster()->GetGUID();
++            }
++
++            PlayerbotWorldThreadProcessor::instance().QueueOperation(
++                std::make_unique<LogoutPlayerBotOperation>(guid, masterGuid));
++            return;
++        }
++
++        // Saved while the bot still exists; a queued save would find it gone
++        if (bot->GetGroup() && !bot->InBattleground() && !bot->InBattlegroundQueue() &&
++            IsRealPlayer(botAI->GetMaster()))
++            PlayerbotRepository::instance().Save(botAI);
+ 
+         LOG_DEBUG("playerbots", "Bot {} logging out", bot->GetName().c_str());
+ 
+diff --git a/src/Script/Playerbots.cpp b/src/Script/Playerbots.cpp
+index a2401a2..562eb81 100644
+--- a/src/Script/Playerbots.cpp
++++ b/src/Script/Playerbots.cpp
+@@ -24,6 +24,7 @@
+ #include "PlayerbotCommandScript.h"
+ #include "PlayerbotGuildMgr.h"
+ #include "PlayerbotSpellRepository.h"
++#include "PlayerbotThreadContext.h"
+ #include "PlayerbotWorldThreadProcessor.h"
+ #include "RandomPlayerbotMgr.h"
+ #include "ScriptMgr.h"
+@@ -544,6 +545,7 @@ public:
+ 
+     void OnUpdate(uint32 diff) override
+     {
++        PlayerbotThreadContext::SetWorldThread();
+         PlayerbotHolder::UpdatePendingLogins();  // Headless sessions whose login holder is in flight
+         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
+         PlayerbotWorldThreadProcessor::instance().Update(diff);
+diff --git a/src/Script/WorldThr/PlayerbotOperations.h b/src/Script/WorldThr/PlayerbotOperations.h
+index 4e152f8..c92880c 100644
+--- a/src/Script/WorldThr/PlayerbotOperations.h
++++ b/src/Script/WorldThr/PlayerbotOperations.h
+@@ -415,43 +415,6 @@ private:
+     std::string m_arenaTeamName;
+ };
+ 
+-// Bot logout group cleanup operation
+-class BotLogoutGroupCleanupOperation : public PlayerbotOperation
+-{
+-public:
+-    BotLogoutGroupCleanupOperation(ObjectGuid botGuid) : m_botGuid(botGuid) {}
+-
+-    bool Execute() override
+-    {
+-        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+-        if (!bot)
+-            return false;
+-
+-        PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
+-        if (!botAI)
+-            return false;
+-
+-        Group* group = bot->GetGroup();
+-        if (group && !bot->InBattleground() && !bot->InBattlegroundQueue() && IsRealPlayer(botAI->GetMaster()))
+-            PlayerbotRepository::instance().Save(botAI);
+-
+-        return true;
+-    }
+-
+-    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+-    uint32 GetPriority() const override { return 70; }
+-    std::string GetName() const override { return "BotLogoutGroupCleanup"; }
+-
+-    bool IsValid() const override
+-    {
+-        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+-        return bot != nullptr;
+-    }
+-
+-private:
+-    ObjectGuid m_botGuid;
+-};
+-
+ // Add player bot operation (for logging in bots from map threads)
+ class AddPlayerBotOperation : public PlayerbotOperation
+ {
+@@ -581,4 +544,39 @@ private:
+     std::function<void(Player*, PlayerbotAI*)> m_task;
+ };
+ 
++// Logs a bot out on the world thread, where the core logs players out. The holder is found again when it runs,
++// since a master's manager may be gone by then.
++class LogoutPlayerBotOperation : public PlayerbotOperation
++{
++public:
++    LogoutPlayerBotOperation(ObjectGuid botGuid, ObjectGuid masterGuid) : m_botGuid(botGuid), m_masterGuid(masterGuid)
++    {
++    }
++
++    bool Execute() override
++    {
++        PlayerbotHolder* holder = &RandomPlayerbotMgr::instance();
++        if (!m_masterGuid.IsEmpty())
++        {
++            Player* master = ObjectAccessor::FindConnectedPlayer(m_masterGuid);
++            holder = master ? PlayerbotsMgr::instance().GetPlayerbotMgr(master) : nullptr;
++        }
++
++        if (!holder || !holder->GetPlayerBot(m_botGuid))
++            return false;
++
++        holder->LogoutPlayerBot(m_botGuid);
++        return true;
++    }
++
++    ObjectGuid GetBotGuid() const override { return m_botGuid; }
++    std::string GetName() const override { return "LogoutPlayerBot"; }
++    // A bot teleporting far is out of the world but still logged in
++    bool IsValid() const override { return ObjectAccessor::FindConnectedPlayer(m_botGuid) != nullptr; }
++
++private:
++    ObjectGuid m_botGuid;
++    ObjectGuid m_masterGuid;
++};
++
+ #endif
+diff --git a/src/Script/WorldThr/PlayerbotThreadContext.cpp b/src/Script/WorldThr/PlayerbotThreadContext.cpp
+new file mode 100644
+index 0000000..840471a
+--- /dev/null
++++ b/src/Script/WorldThr/PlayerbotThreadContext.cpp
+@@ -0,0 +1,34 @@
++/*
++ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
++ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
++ * or (at your option) any later version.
++ */
++
++#include "PlayerbotThreadContext.h"
++#include "Log.h"
++#include "World.h"
++#include <atomic>
++#include <thread>
++
++namespace
++{
++    std::atomic<std::thread::id> worldThread{};
++}
++
++void PlayerbotThreadContext::SetWorldThread()
++{
++    std::thread::id const self = std::this_thread::get_id();
++    std::thread::id const previous = worldThread.exchange(self, std::memory_order_relaxed);
++    if (previous != std::thread::id() && previous != self)
++        LOG_ERROR("playerbots", "The world update ran on a different thread than before");
++}
++
++bool PlayerbotThreadContext::IsWorldThread()
++{
++    return worldThread.load(std::memory_order_relaxed) == std::this_thread::get_id();
++}
++
++bool PlayerbotThreadContext::OtherMapsMayRun()
++{
++    return sWorld->getIntConfig(CONFIG_NUMTHREADS) > 1 && !IsWorldThread();
++}
+diff --git a/src/Script/WorldThr/PlayerbotThreadContext.h b/src/Script/WorldThr/PlayerbotThreadContext.h
+new file mode 100644
+index 0000000..092ddfd
+--- /dev/null
++++ b/src/Script/WorldThr/PlayerbotThreadContext.h
+@@ -0,0 +1,22 @@
++/*
++ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
++ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
++ * or (at your option) any later version.
++ */
++
++#ifndef PLAYERBOTS_PLAYERBOTTHREADCONTEXT_H
++#define PLAYERBOTS_PLAYERBOTTHREADCONTEXT_H
++
++// Maps update on MapUpdate.Threads workers while the world thread waits for them, so a map thread may only touch
++// the bots on its own map. The world thread may touch any bot, and so may every thread when there is one worker.
++namespace PlayerbotThreadContext
++{
++    // Called from the world hooks
++    void SetWorldThread();
++    bool IsWorldThread();
++
++    // True when another map may be updating at the same time as the calling thread
++    bool OtherMapsMayRun();
++}
++
++#endif

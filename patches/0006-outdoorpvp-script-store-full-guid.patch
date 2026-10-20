@@ -1,0 +1,78 @@
+diff --git a/src/server/game/OutdoorPvP/OutdoorPvP.cpp b/src/server/game/OutdoorPvP/OutdoorPvP.cpp
+index 6ea63c3..c5a1de8 100644
+--- a/src/server/game/OutdoorPvP/OutdoorPvP.cpp
++++ b/src/server/game/OutdoorPvP/OutdoorPvP.cpp
+@@ -676,7 +676,7 @@ void OutdoorPvP::TeamApplyBuff(TeamId teamId, uint32 spellId, uint32 spellId2, P
+ 
+ void OutdoorPvP::OnGameObjectCreate(GameObject* go)
+ {
+-    GoScriptPair sp(go->GetGUID().GetCounter(), go);
++    GoScriptPair sp(go->GetGUID(), go);
+     _goScriptStore.insert(sp);
+ 
+     if (go->GetGoType() != GAMEOBJECT_TYPE_CAPTURE_POINT)
+@@ -692,7 +692,7 @@ void OutdoorPvP::OnGameObjectCreate(GameObject* go)
+ 
+ void OutdoorPvP::OnGameObjectRemove(GameObject* go)
+ {
+-    _goScriptStore.erase(go->GetGUID().GetCounter());
++    _goScriptStore.erase(go->GetGUID());
+ 
+     if (go->GetGoType() != GAMEOBJECT_TYPE_CAPTURE_POINT)
+     {
+@@ -707,13 +707,13 @@ void OutdoorPvP::OnGameObjectRemove(GameObject* go)
+ 
+ void OutdoorPvP::OnCreatureCreate(Creature* creature)
+ {
+-    CreatureScriptPair sp(creature->GetGUID().GetCounter(), creature);
++    CreatureScriptPair sp(creature->GetGUID(), creature);
+     _creatureScriptStore.insert(sp);
+ }
+ 
+ void OutdoorPvP::OnCreatureRemove(Creature* creature)
+ {
+-    _creatureScriptStore.erase(creature->GetGUID().GetCounter());
++    _creatureScriptStore.erase(creature->GetGUID());
+ }
+ 
+ void OutdoorPvP::SetMapFromZone(uint32 zone)
+diff --git a/src/server/game/OutdoorPvP/OutdoorPvP.h b/src/server/game/OutdoorPvP/OutdoorPvP.h
+index 774244a..e477a8c 100644
+--- a/src/server/game/OutdoorPvP/OutdoorPvP.h
++++ b/src/server/game/OutdoorPvP/OutdoorPvP.h
+@@ -199,8 +199,8 @@ public:
+     void DeleteSpawns();
+ 
+     typedef std::map<ObjectGuid::LowType/*lowguid*/, OPvPCapturePoint*> OPvPCapturePointMap;
+-    typedef std::pair<ObjectGuid::LowType, GameObject*> GoScriptPair;
+-    typedef std::pair<ObjectGuid::LowType, Creature*> CreatureScriptPair;
++    typedef std::pair<ObjectGuid, GameObject*> GoScriptPair;
++    typedef std::pair<ObjectGuid, Creature*> CreatureScriptPair;
+ 
+     virtual void FillInitialWorldStates(WorldPackets::WorldState::InitWorldStates& /*packet*/) {}
+ 
+@@ -273,8 +273,9 @@ protected:
+     uint32 _typeId{};
+     bool _sendUpdate{ true };
+     Map* _map{};
+-    std::unordered_map<ObjectGuid::LowType, GameObject*> _goScriptStore;
+-    std::unordered_map<ObjectGuid::LowType, Creature*> _creatureScriptStore;
++    // Keyed by the full guid: the low counter is per HighGuid, so a static transport and a gameobject on the same map can share it
++    std::unordered_map<ObjectGuid, GameObject*> _goScriptStore;
++    std::unordered_map<ObjectGuid, Creature*> _creatureScriptStore;
+ };
+ 
+ #endif /*OUTDOOR_PVP_H_*/
+diff --git a/src/server/game/OutdoorPvP/OutdoorPvPMgr.cpp b/src/server/game/OutdoorPvP/OutdoorPvPMgr.cpp
+index 7a8b6b9..81d1814 100644
+--- a/src/server/game/OutdoorPvP/OutdoorPvPMgr.cpp
++++ b/src/server/game/OutdoorPvP/OutdoorPvPMgr.cpp
+@@ -35,6 +35,8 @@ OutdoorPvPMgr* OutdoorPvPMgr::instance()
+ 
+ void OutdoorPvPMgr::Die()
+ {
++    // Drop the zone lookup first: it holds raw pointers into m_OutdoorPvPSet, and objects created later must not get a freed zone script
++    m_OutdoorPvPMap.clear();
+     m_OutdoorPvPSet.clear();
+     m_OutdoorPvPDatas.clear();
+ }

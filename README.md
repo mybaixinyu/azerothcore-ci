@@ -75,6 +75,15 @@ build instead of being silently skipped.
   stale home position, and `SummonsFollow()` only ran at the stops. Re-issues the
   follow every 2 s for any summon that is out of combat and not following. Upstream:
   azerothcore/azerothcore-wotlk#6593, #5848, #20626 (all open). Untested in game.
+- `0006-outdoorpvp-script-store-full-guid.patch` — shutdown use-after-free in
+  `GameObject::RemoveFromWorld` (`m_zoneScript->OnGameObjectRemove`) during
+  `MapMgr::UnloadAll`. An OutdoorPvP registers the objects whose zone script it is
+  and clears that pointer in its destructor, but it keyed the registry by the
+  per-map low counter, which is per HighGuid: a static transport (elevator) and a
+  gameobject in the same OutdoorPvP can share it, so one of them is never cleared
+  and keeps pointing at the OutdoorPvP that `Die()` freed. Keys the registry by the
+  full `ObjectGuid`, and `Die()` now also clears the zone lookup that held the freed
+  pointers. Seen once (2026-10-19); no upstream issue yet.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

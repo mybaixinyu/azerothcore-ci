@@ -121,7 +121,11 @@ build instead of being silently skipped.
   then `npc_text_locale` / `gossip_menu_option_locale`). An option is relocalized only
   when it matches a database option of the menu by id and by its text in the bot's
   locale, so options a script added keep their text; a missing translation falls back
-  to the original. The bot's own menu is untouched.
+  to the original. The bot's own menu is untouched. The NPC name uses the master's
+  locale too, and the codes a client fills in gossip text (`$N`, `$C`, `$R`,
+  `$Gmale:female;`, `$B` line breaks) are filled for the bot, each `$B` part told as
+  its own line. Like the client, only the NPC text for the bot's gender is told, not
+  both.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

@@ -1,16 +1,21 @@
 diff --git a/src/Ai/Base/Actions/GossipHelloAction.cpp b/src/Ai/Base/Actions/GossipHelloAction.cpp
-index b1bd617..f7e9121 100644
+index b1bd617..1e127bc 100644
 --- a/src/Ai/Base/Actions/GossipHelloAction.cpp
 +++ b/src/Ai/Base/Actions/GossipHelloAction.cpp
-@@ -7,10 +7,57 @@
+@@ -5,11 +5,130 @@
+  */
+ 
  #include "GossipHelloAction.h"
++#include "DBCStores.h"
  #include "Event.h"
  #include "GossipDef.h"
 +#include "ObjectMgr.h"
  #include "PlayerbotOperations.h"
  #include "PlayerbotWorldThreadProcessor.h"
  #include "Playerbots.h"
- 
++#include "World.h"
++#include <algorithm>
++
 +// What the bot tells its master is read in the master's client language, not the bot's session one
 +static LocaleConstant MasterLocale(Player* master)
 +{
@@ -57,10 +62,78 @@ index b1bd617..f7e9121 100644
 +    return item.Message;
 +}
 +
++template <class Entry>
++static std::string DbcName(Entry const* entry, LocaleConstant locale)
++{
++    if (!entry)
++        return "";
++
++    char const* name = entry->name[locale];
++    if (!name || !*name)
++        name = entry->name[sWorld->GetDefaultDbcLocale()];
++    return name ? name : "";
++}
++
++// Fills the codes the client fills in gossip text ($N, $C, $R, $Gmale:female; and $B line breaks) for the bot the NPC
++// talks to. Returns the non-empty lines.
++static std::vector<std::string> FillClientCodes(std::string const& text, Player* bot, LocaleConstant locale)
++{
++    std::vector<std::string> lines(1);
++    for (std::size_t i = 0; i < text.size(); ++i)
++    {
++        char const code = i + 1 < text.size() && text[i] == '$' ? text[i + 1] : 0;
++        switch (code)
++        {
++            case 'B':
++            case 'b':
++                lines.emplace_back();
++                break;
++            case 'N':
++            case 'n':
++                lines.back() += bot->GetName();
++                break;
++            case 'C':
++            case 'c':
++                lines.back() += DbcName(sChrClassesStore.LookupEntry(bot->getClass()), locale);
++                break;
++            case 'R':
++            case 'r':
++                lines.back() += DbcName(sChrRacesStore.LookupEntry(bot->getRace()), locale);
++                break;
++            case 'G':
++            case 'g':
++            {
++                std::size_t const colon = text.find(':', i + 2);
++                std::size_t const end = colon == std::string::npos ? colon : text.find(';', colon + 1);
++                if (end == std::string::npos)
++                {
++                    lines.back() += text[i];
++                    continue;
++                }
++
++                lines.back() += bot->getGender() == GENDER_FEMALE ? text.substr(colon + 1, end - colon - 1)
++                                                                    : text.substr(i + 2, colon - i - 2);
++                i = end;
++                continue;
++            }
++            default:
++                lines.back() += text[i];
++                continue;
++        }
++
++        ++i;
++    }
++
++    lines.erase(std::remove_if(lines.begin(), lines.end(),
++                               [](std::string const& line)
++                               { return line.find_first_not_of(" \t\r\n") == std::string::npos; }),
++                lines.end());
++    return lines;
++}
+ 
  bool GossipHelloAction::Execute(Event event)
  {
-     ObjectGuid guid;
-@@ -43,13 +90,31 @@ void GossipHelloAction::TellGossipText(uint32 textId)
+@@ -43,15 +162,33 @@ void GossipHelloAction::TellGossipText(uint32 textId)
  
      if (GossipText const* text = sObjectMgr->GetGossipText(textId))
      {
@@ -70,6 +143,8 @@ index b1bd617..f7e9121 100644
          for (uint8 i = 0; i < MAX_GOSSIP_TEXT_OPTIONS; i++)
          {
 -            std::string const text0 = text->Options[i].Text_0;
+-            if (!text0.empty())
+-                botAI->TellMasterNoFacing(text0);
 +            std::string text0, text1;
 +            if (BroadcastText const* broadcast = sObjectMgr->GetBroadcastText(text->Options[i].BroadcastTextID))
 +            {
@@ -86,15 +161,19 @@ index b1bd617..f7e9121 100644
 +                    ObjectMgr::GetLocaleString(textLocale->Text_1[i], locale, text1);
 +                }
 +            }
-+
-             if (!text0.empty())
-                 botAI->TellMasterNoFacing(text0);
  
 -            std::string const text1 = text->Options[i].Text_1;
-             if (!text1.empty())
-                 botAI->TellMasterNoFacing(text1);
+-            if (!text1.empty())
+-                botAI->TellMasterNoFacing(text1);
++            // The client shows the text for its player's gender, the other one when that is empty
++            std::string const& said = bot->getGender() == GENDER_FEMALE ? (text1.empty() ? text0 : text1)
++                                                                         : (text0.empty() ? text1 : text0);
++            for (std::string const& line : FillClientCodes(said, bot, locale))
++                botAI->TellMasterNoFacing(line);
          }
-@@ -69,12 +134,12 @@ void GossipHelloAction::TellGossipMenus()
+     }
+ }
+@@ -69,12 +206,15 @@ void GossipHelloAction::TellGossipMenus()
          TellGossipText(textId);
      }
  
@@ -105,7 +184,19 @@ index b1bd617..f7e9121 100644
 -        GossipMenuItem const* item = &(iter->second);
          std::ostringstream out;
 -        out << "[" << iter->first << "] " << item->Message;
-+        out << "[" << iter->first << "] " << LocalizedMenuItem(menu, iter->first, iter->second, locale);
++        out << "[" << iter->first << "]";
++        for (std::string const& line :
++             FillClientCodes(LocalizedMenuItem(menu, iter->first, iter->second, locale), bot, locale))
++            out << " " << line;
          botAI->TellMasterNoFacing(out.str());
      }
  }
+@@ -145,7 +285,7 @@ bool GossipHelloAction::Execute(ObjectGuid guid, int32 menuToSelect, bool silent
+         if (!silent)
+         {
+             std::ostringstream out;
+-            out << "--- " << pCreature->GetName() << " ---";
++            out << "--- " << pCreature->GetNameForLocaleIdx(MasterLocale(GetMaster())) << " ---";
+             botAI->TellMasterNoFacing(out.str());
+             TellGossipMenus();
+         }

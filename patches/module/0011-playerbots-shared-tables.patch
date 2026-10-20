@@ -1,0 +1,595 @@
+diff --git a/src/Ai/Base/Actions/EmoteAction.cpp b/src/Ai/Base/Actions/EmoteAction.cpp
+index 915179f..3392108 100644
+--- a/src/Ai/Base/Actions/EmoteAction.cpp
++++ b/src/Ai/Base/Actions/EmoteAction.cpp
+@@ -8,15 +8,17 @@
+ #include "Event.h"
+ #include "Playerbots.h"
+ #include "ServerFacade.h"
++#include <mutex>
+ 
+ std::map<std::string, uint32> EmoteActionBase::emotes;
+ std::map<std::string, uint32> EmoteActionBase::textEmotes;
++// Bots on several maps can build their first emote action at the same time
++static std::once_flag emotesFilled;
+ char* strstri(char const* haystack, char const* needle);
+ 
+ EmoteActionBase::EmoteActionBase(PlayerbotAI* botAI, std::string const name) : Action(botAI, name)
+ {
+-    if (emotes.empty())
+-        InitEmotes();
++    std::call_once(emotesFilled, &EmoteActionBase::InitEmotes, this);
+ }
+ 
+ EmoteAction::EmoteAction(PlayerbotAI* botAI) : EmoteActionBase(botAI, "emote"), Qualified() {}
+diff --git a/src/Ai/Base/Actions/InventoryChangeFailureAction.cpp b/src/Ai/Base/Actions/InventoryChangeFailureAction.cpp
+index 3a19c6b..b07a7cc 100644
+--- a/src/Ai/Base/Actions/InventoryChangeFailureAction.cpp
++++ b/src/Ai/Base/Actions/InventoryChangeFailureAction.cpp
+@@ -7,6 +7,7 @@
+ #include "InventoryChangeFailureAction.h"
+ #include "Event.h"
+ #include "Playerbots.h"
++#include <mutex>
+ 
+ std::map<InventoryResult, std::string> InventoryChangeFailureAction::messages;
+ 
+@@ -15,7 +16,9 @@ bool InventoryChangeFailureAction::Execute(Event event)
+     if (!botAI->GetMaster())
+         return false;
+ 
+-    if (messages.empty())
++    // Filled by the first bot that needs it, on whichever map thread that is
++    static std::once_flag filled;
++    std::call_once(filled, []()
+     {
+         messages[EQUIP_ERR_CANT_EQUIP_LEVEL_I] = "My level is too low";
+         messages[EQUIP_ERR_CANT_EQUIP_SKILL] = "My skill level is too low";
+@@ -82,7 +85,7 @@ bool InventoryChangeFailureAction::Execute(Event event)
+         messages[EQUIP_ERR_CANT_EQUIP_REPUTATION] = "Not enough reputation";
+         messages[EQUIP_ERR_TOO_MANY_SPECIAL_BAGS] = "Too many special bags";
+         messages[EQUIP_ERR_LOOT_CANT_LOOT_THAT_NOW] = "Cannot loot this right now";
+-    }
++    });
+ 
+     WorldPacket p(event.getPacket());
+     p.rpos(0);
+@@ -91,10 +94,10 @@ bool InventoryChangeFailureAction::Execute(Event event)
+     if (err == EQUIP_ERR_OK)
+         return false;
+ 
+-    std::string const msg = messages[(InventoryResult)err];
+-    if (!msg.empty())
++    auto const msg = messages.find((InventoryResult)err);
++    if (msg != messages.end() && !msg->second.empty())
+     {
+-        botAI->TellError(msg);
++        botAI->TellError(msg->second);
+         return true;
+     }
+ 
+diff --git a/src/Ai/Base/Actions/MailAction.cpp b/src/Ai/Base/Actions/MailAction.cpp
+index faed72a..0c59b61 100644
+--- a/src/Ai/Base/Actions/MailAction.cpp
++++ b/src/Ai/Base/Actions/MailAction.cpp
+@@ -9,6 +9,7 @@
+ #include "Event.h"
+ #include "Mail.h"
+ #include "Playerbots.h"
++#include <mutex>
+ 
+ std::map<std::string, MailProcessor*> MailAction::processors;
+ 
+@@ -265,13 +266,15 @@ bool MailAction::Execute(Event event)
+         return false;
+     }
+ 
+-    if (processors.empty())
++    // Filled by the first bot that needs it, on whichever map thread that is
++    static std::once_flag filled;
++    std::call_once(filled, []()
+     {
+         processors["?"] = &TellMailProcessor::instance;
+         processors["take"] = &TakeMailProcessor::instance;
+         processors["delete"] = &DeleteMailProcessor::instance;
+         processors["read"] = &ReadMailProcessor::instance;
+-    }
++    });
+ 
+     std::string const text = event.getParam();
+     if (text.empty())
+@@ -285,7 +288,8 @@ bool MailAction::Execute(Event event)
+     std::string const action = ss[0];
+     std::string const filter = ss.size() > 1 ? ss[1] : "";
+ 
+-    MailProcessor* processor = processors[action];
++    auto const found = processors.find(action);
++    MailProcessor* processor = found != processors.end() ? found->second : nullptr;
+     if (!processor)
+     {
+         std::ostringstream out;
+diff --git a/src/Ai/Base/Actions/SetCraftAction.cpp b/src/Ai/Base/Actions/SetCraftAction.cpp
+index 0e96547..ca66821 100644
+--- a/src/Ai/Base/Actions/SetCraftAction.cpp
++++ b/src/Ai/Base/Actions/SetCraftAction.cpp
+@@ -10,6 +10,7 @@
+ #include "Event.h"
+ #include "PlayerbotTextMgr.h"
+ #include "Playerbots.h"
++#include <mutex>
+ 
+ std::map<uint32, SkillLineAbilityEntry const*> SetCraftAction::skillSpells;
+ 
+@@ -49,11 +50,13 @@ bool SetCraftAction::Execute(Event event)
+     if (!proto)
+         return false;
+ 
+-    if (skillSpells.empty())
++    // Filled by the first bot that needs it, on whichever map thread that is
++    static std::once_flag filled;
++    std::call_once(filled, []()
+     {
+         for (SkillLineAbilityEntry const* skillLine : sSkillLineAbilityStore)
+             skillSpells[skillLine->Spell] = skillLine;
+-    }
++    });
+ 
+     data.required.clear();
+     data.obtained.clear();
+@@ -69,7 +72,8 @@ bool SetCraftAction::Execute(Event event)
+         if (!spellInfo)
+             continue;
+ 
+-        SkillLineAbilityEntry const* skillLine = skillSpells[spellId];
++        auto const found = skillSpells.find(spellId);
++        SkillLineAbilityEntry const* skillLine = found != skillSpells.end() ? found->second : nullptr;
+         if (skillLine != nullptr)
+         {
+             for (uint8 i = 0; i < 3; ++i)
+diff --git a/src/Ai/Base/Actions/SuggestWhatToDoAction.cpp b/src/Ai/Base/Actions/SuggestWhatToDoAction.cpp
+index 437ebb8..ee05fe8 100644
+--- a/src/Ai/Base/Actions/SuggestWhatToDoAction.cpp
++++ b/src/Ai/Base/Actions/SuggestWhatToDoAction.cpp
+@@ -14,6 +14,7 @@
+ #include "Playerbots.h"
+ #include "ServerFacade.h"
+ #include <functional>
++#include <mutex>
+ 
+ enum eTalkType
+ {
+@@ -137,7 +138,9 @@ void SuggestWhatToDoAction::grindMaterials()
+ 
+ void SuggestWhatToDoAction::grindReputation()
+ {
+-    if (factions.empty())
++    // Filled by the first bot that needs it, on whichever map thread that is
++    static std::once_flag filled;
++    std::call_once(filled, []()
+     {
+         factions["Argent Dawn"] = 60;
+         factions["Bloodsail Buccaneers"] = 40;
+@@ -173,7 +176,7 @@ void SuggestWhatToDoAction::grindReputation()
+         factions["Knights of the Ebon Blade"] = 77;
+         factions["The Sons of Hodir"] = 78;
+         factions["The Wyrmrest Accord"] = 77;
+-    }
++    });
+ 
+     std::vector<std::string> levels;
+     levels.push_back("honored");
+@@ -252,7 +255,9 @@ bool SuggestDungeonAction::Execute(Event /*event*/)
+     if (!sPlayerbotAIConfig.RandomBotSuggestDungeons || bot->GetGroup())
+         return false;
+ 
+-    if (instances.empty())
++    // Filled by the first bot that needs it, on whichever map thread that is
++    static std::once_flag filled;
++    std::call_once(filled, []()
+     {
+         instances["Ragefire Chasm"] = 15;
+         instances["Deadmines"] = 18;
+@@ -296,7 +301,7 @@ bool SuggestDungeonAction::Execute(Event /*event*/)
+         instances["Forge of Souls"] = 80;
+         instances["Pit of Saron"] = 80;
+         instances["Halls of Reflection"] = 80;
+-    }
++    });
+ 
+     std::vector<std::string> allowedInstances;
+     for (auto it : instances)
+diff --git a/src/Bot/Cmd/ChatHelper.cpp b/src/Bot/Cmd/ChatHelper.cpp
+index c4739c5..d2a4ed6 100644
+--- a/src/Bot/Cmd/ChatHelper.cpp
++++ b/src/Bot/Cmd/ChatHelper.cpp
+@@ -638,12 +638,20 @@ bool ChatHelper::parseableItem(std::string const text)
+            substrContainsInMap<uint32>(text, skills) || parseMoney(text) > 0;
+ }
+ 
++// The name tables are read by bots on every map thread, so a missing key is not inserted
++static std::string NameOf(std::map<uint8, std::string> const& names, uint8 key)
++{
++    auto const found = names.find(key);
++    return found != names.end() ? found->second : "";
++}
++
+ std::string const ChatHelper::FormatClass(Player* player, int8 spec)
+ {
+     uint8 cls = player->getClass();
+ 
+     std::ostringstream out;
+-    out << specs[cls][spec] << " (";
++    auto const classSpecs = specs.find(cls);
++    out << (classSpecs != specs.end() ? NameOf(classSpecs->second, spec) : "") << " (";
+ 
+     std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(player);
+     uint32 c0 = tabs[0];
+@@ -654,11 +662,11 @@ std::string const ChatHelper::FormatClass(Player* player, int8 spec)
+     out << (c1 ? "|h|cff00ff00" : "") << c1 << "|h|cffffffff/";
+     out << (c2 ? "|h|cff00ff00" : "") << c2 << "|h|cffffffff";
+ 
+-    out << ")|r " << classes[cls];
++    out << ")|r " << NameOf(classes, cls);
+     return out.str();
+ }
+ 
+-std::string const ChatHelper::FormatClass(uint8 cls) { return classes[cls]; }
++std::string const ChatHelper::FormatClass(uint8 cls) { return NameOf(classes, cls); }
+ 
+ std::string const ChatHelper::FormatRace(uint8 race)
+ {
+diff --git a/src/Bot/Engine/PassiveMultiplier.cpp b/src/Bot/Engine/PassiveMultiplier.cpp
+index ab9af9f..e2cfa86 100644
+--- a/src/Bot/Engine/PassiveMultiplier.cpp
++++ b/src/Bot/Engine/PassiveMultiplier.cpp
+@@ -6,28 +6,28 @@
+ 
+ #include "PassiveMultiplier.h"
+ #include "Action.h"
++#include <mutex>
+ 
+ std::vector<std::string> PassiveMultiplier::allowedActions;
+ std::vector<std::string> PassiveMultiplier::allowedParts;
+ 
+ PassiveMultiplier::PassiveMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "passive")
+ {
+-    if (allowedActions.empty())
++    // Filled by the first bot that needs it, on whichever map thread that is
++    static std::once_flag filled;
++    std::call_once(filled, []()
+     {
+         allowedActions.push_back("co");
+         allowedActions.push_back("nc");
+         allowedActions.push_back("reset botAI");
+         allowedActions.push_back("check mount state");
+         allowedActions.push_back("lfg");
+-    }
+ 
+-    if (allowedParts.empty())
+-    {
+         allowedParts.push_back("follow");
+         allowedParts.push_back("move from group");
+         allowedParts.push_back("stay");
+         allowedParts.push_back("chat shortcut");
+-    }
++    });
+ }
+ 
+ float PassiveMultiplier::GetValue(Action* action)
+diff --git a/src/Bot/Engine/Strategy/CustomStrategy.cpp b/src/Bot/Engine/Strategy/CustomStrategy.cpp
+index 15bc1f9..b63e709 100644
+--- a/src/Bot/Engine/Strategy/CustomStrategy.cpp
++++ b/src/Bot/Engine/Strategy/CustomStrategy.cpp
+@@ -57,7 +57,8 @@ void CustomStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+ {
+     if (actionLines.empty())
+     {
+-        if (actionLinesCache[qualifier].empty())
++        auto const cached = actionLinesCache.find(qualifier);
++        if (cached == actionLinesCache.end() || cached->second.empty())
+         {
+             LoadActionLines((uint32)botAI->GetBot()->GetGUID().GetCounter());
+             if (actionLines.empty())
+@@ -65,7 +66,7 @@ void CustomStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+         }
+         else
+         {
+-            std::vector<std::string> tokens = split(actionLinesCache[qualifier], '\n');
++            std::vector<std::string> tokens = split(cached->second, '\n');
+             std::regex tpl("\\(nullptr,\\s*'.+',\\s*'(.+)'\\)(,|;)");
+             for (std::vector<std::string>::iterator i = tokens.begin(); i != tokens.end(); ++i)
+             {
+@@ -110,5 +111,7 @@ void CustomStrategy::LoadActionLines(uint32 owner)
+ void CustomStrategy::Reset()
+ {
+     actionLines.clear();
+-    actionLinesCache[qualifier].clear();
++    auto const cached = actionLinesCache.find(qualifier);
++    if (cached != actionLinesCache.end())
++        cached->second.clear();
+ }
+diff --git a/src/Bot/Factory/PlayerbotFactory.cpp b/src/Bot/Factory/PlayerbotFactory.cpp
+index cb3117a..9b9d84d 100644
+--- a/src/Bot/Factory/PlayerbotFactory.cpp
++++ b/src/Bot/Factory/PlayerbotFactory.cpp
+@@ -41,6 +41,7 @@
+ #include "Trainer.h"
+ #include "World.h"
+ #include <array>
++#include <mutex>
+ #include <unordered_set>
+ #include <utility>
+ 
+@@ -104,6 +105,8 @@ std::list<uint32> PlayerbotFactory::specialQuestIds;
+ std::vector<uint32> PlayerbotFactory::enchantSpellIdCache;
+ std::vector<uint32> PlayerbotFactory::enchantGemIdCache;
+ std::unordered_map<uint32, std::vector<uint32>> PlayerbotFactory::trainerIdCache;
++// Bots on several maps can fill or read the cache at the same time
++static std::mutex trainerIdCacheLock;
+ std::vector<uint32> PlayerbotFactory::ccBreakTrinketCache;
+ 
+ namespace
+@@ -3515,29 +3518,36 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
+ 
+ void PlayerbotFactory::InitAvailableSpells()
+ {
+-    if (trainerIdCache[bot->getClass()].empty())
++    std::vector<uint32> trainerIds;
+     {
+-        CreatureTemplateContainer const* creatureTemplateContainer = sObjectMgr->GetCreatureTemplates();
+-        for (CreatureTemplateContainer::const_iterator i = creatureTemplateContainer->begin();
+-             i != creatureTemplateContainer->end(); ++i)
++        std::lock_guard<std::mutex> guard(trainerIdCacheLock);
++        std::vector<uint32>& cachedIds = trainerIdCache[bot->getClass()];
++        if (cachedIds.empty())
+         {
+-            Trainer::Trainer* trainer = sObjectMgr->GetTrainer(i->first);
++            CreatureTemplateContainer const* creatureTemplateContainer = sObjectMgr->GetCreatureTemplates();
++            for (CreatureTemplateContainer::const_iterator i = creatureTemplateContainer->begin();
++                 i != creatureTemplateContainer->end(); ++i)
++            {
++                Trainer::Trainer* trainer = sObjectMgr->GetTrainer(i->first);
+ 
+-            if (!trainer)
+-                continue;
++                if (!trainer)
++                    continue;
+ 
+-            if (trainer->GetTrainerType() != Trainer::Type::Tradeskill &&
+-                trainer->GetTrainerType() != Trainer::Type::Class)
+-                continue;
++                if (trainer->GetTrainerType() != Trainer::Type::Tradeskill &&
++                    trainer->GetTrainerType() != Trainer::Type::Class)
++                    continue;
+ 
+-            if (trainer->GetTrainerType() == Trainer::Type::Class &&
+-                !trainer->IsTrainerValidForPlayer(bot))
+-                continue;
++                if (trainer->GetTrainerType() == Trainer::Type::Class &&
++                    !trainer->IsTrainerValidForPlayer(bot))
++                    continue;
+ 
+-            trainerIdCache[bot->getClass()].push_back(i->first);
++                cachedIds.push_back(i->first);
++            }
+         }
++        trainerIds = cachedIds;
+     }
+-    for (uint32 trainerId : trainerIdCache[bot->getClass()])
++
++    for (uint32 trainerId : trainerIds)
+     {
+         Trainer::Trainer* trainer = sObjectMgr->GetTrainer(trainerId);
+ 
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index 34d5660..e2910dc 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
+@@ -80,7 +80,8 @@ std::vector<std::string> split(std::string const s, char delim);
+ char* strstri(char const* str1, char const* str2);
+ std::string& trim(std::string& s);
+ 
+-std::set<std::string> PlayerbotAI::unsecuredCommands;
++std::set<std::string> const PlayerbotAI::unsecuredCommands = {"who",   "wts", "sendmail",  "invite",
++                                                               "leave", "lfg", "pvp stats", "rpg status"};
+ 
+ PlayerbotChatHandler::PlayerbotChatHandler(Player* pMasterPlayer) : ChatHandler(pMasterPlayer->GetSession()) {}
+ 
+@@ -683,7 +684,12 @@ void PlayerbotAI::HandleCommands()
+     }
+ }
+ 
+-std::map<std::string, ChatMsg> chatMap;
++// Built before any map thread starts: map threads read it from HandleCommand
++std::map<std::string, ChatMsg> const chatMap = {{"#w ", CHAT_MSG_WHISPER},
++                                                {"#p ", CHAT_MSG_PARTY},
++                                                {"#r ", CHAT_MSG_RAID},
++                                                {"#a ", CHAT_MSG_ADDON},
++                                                {"#g ", CHAT_MSG_GUILD}};
+ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang)
+ {
+     if (!bot)
+@@ -725,16 +731,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
+         filtered = filtered.substr(sPlayerbotAIConfig.CommandPrefix.size());
+     }
+ 
+-    if (chatMap.empty())
+-    {
+-        chatMap["#w "] = CHAT_MSG_WHISPER;
+-        chatMap["#p "] = CHAT_MSG_PARTY;
+-        chatMap["#r "] = CHAT_MSG_RAID;
+-        chatMap["#a "] = CHAT_MSG_ADDON;
+-        chatMap["#g "] = CHAT_MSG_GUILD;
+-    }
+     currentChat = std::pair<ChatMsg, time_t>(CHAT_MSG_WHISPER, 0);
+-    for (std::map<std::string, ChatMsg>::iterator i = chatMap.begin(); i != chatMap.end(); ++i)
++    for (std::map<std::string, ChatMsg>::const_iterator i = chatMap.begin(); i != chatMap.end(); ++i)
+     {
+         if (filtered.find(i->first) == 0)
+         {
+@@ -1017,19 +1015,7 @@ void PlayerbotAI::LeaveOrDisbandGroup()
+ 
+ bool PlayerbotAI::IsAllowedCommand(std::string const text)
+ {
+-    if (unsecuredCommands.empty())
+-    {
+-        unsecuredCommands.insert("who");
+-        unsecuredCommands.insert("wts");
+-        unsecuredCommands.insert("sendmail");
+-        unsecuredCommands.insert("invite");
+-        unsecuredCommands.insert("leave");
+-        unsecuredCommands.insert("lfg");
+-        unsecuredCommands.insert("pvp stats");
+-        unsecuredCommands.insert("rpg status");
+-    }
+-
+-    for (std::set<std::string>::iterator i = unsecuredCommands.begin(); i != unsecuredCommands.end(); ++i)
++    for (std::set<std::string>::const_iterator i = unsecuredCommands.begin(); i != unsecuredCommands.end(); ++i)
+     {
+         if (text.find(*i) == 0)
+         {
+@@ -1072,17 +1058,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
+         filtered = filtered.substr(sPlayerbotAIConfig.CommandPrefix.size());
+     }
+ 
+-    if (chatMap.empty())
+-    {
+-        chatMap["#w "] = CHAT_MSG_WHISPER;
+-        chatMap["#p "] = CHAT_MSG_PARTY;
+-        chatMap["#r "] = CHAT_MSG_RAID;
+-        chatMap["#a "] = CHAT_MSG_ADDON;
+-        chatMap["#g "] = CHAT_MSG_GUILD;
+-    }
+-
+     currentChat = std::pair<ChatMsg, time_t>(CHAT_MSG_WHISPER, 0);
+-    for (std::map<std::string, ChatMsg>::iterator i = chatMap.begin(); i != chatMap.end(); ++i)
++    for (std::map<std::string, ChatMsg>::const_iterator i = chatMap.begin(); i != chatMap.end(); ++i)
+     {
+         if (filtered.find(i->first) == 0)
+         {
+diff --git a/src/Bot/PlayerbotAI.h b/src/Bot/PlayerbotAI.h
+index ee27a26..eaa9851 100644
+--- a/src/Bot/PlayerbotAI.h
++++ b/src/Bot/PlayerbotAI.h
+@@ -671,7 +671,7 @@ protected:
+     PlayerbotSecurity security;
+     std::map<std::string, time_t> whispers;
+     std::pair<ChatMsg, time_t> currentChat;
+-    static std::set<std::string> unsecuredCommands;
++    static std::set<std::string> const unsecuredCommands;
+     bool allowActive[MAX_ACTIVITY_TYPE];
+     time_t allowActiveCheckTimer[MAX_ACTIVITY_TYPE];
+     ReactionEngine* reactionEngine = nullptr;
+diff --git a/src/Mgr/Item/RandomItemMgr.cpp b/src/Mgr/Item/RandomItemMgr.cpp
+index 8ad79c1..20a5059 100644
+--- a/src/Mgr/Item/RandomItemMgr.cpp
++++ b/src/Mgr/Item/RandomItemMgr.cpp
+@@ -9,8 +9,12 @@
+ #include "DBCStores.h"
+ #include "ItemTemplate.h"
+ #include "Playerbots.h"
++#include <mutex>
++#include <shared_mutex>
+ 
+ std::unordered_set<uint32> RandomItemMgr::itemCache;
++// Grown by bots on every map thread as they look at crafting materials
++static std::shared_mutex itemCacheLock;
+ 
+ class RandomItemGuildTaskPredicate : public RandomItemPredicate
+ {
+@@ -1531,8 +1535,11 @@ bool RandomItemMgr::IsUsedBySkill(ItemTemplate const* proto, uint32 skillId)
+     if (!proto)
+         return false;
+ 
+-    if (itemCache.contains(proto->ItemId))
+-        return true;
++    {
++        std::shared_lock<std::shared_mutex> guard(itemCacheLock);
++        if (itemCache.contains(proto->ItemId))
++            return true;
++    }
+ 
+     switch (proto->Class)
+     {
+@@ -1542,6 +1549,7 @@ bool RandomItemMgr::IsUsedBySkill(ItemTemplate const* proto, uint32 skillId)
+         case ITEM_CLASS_GEM:
+             if (IsCraftedBySkill(proto->ItemId, skillId))
+             {
++                std::unique_lock<std::shared_mutex> guard(itemCacheLock);
+                 itemCache.insert(proto->ItemId);
+                 return true;
+             }
+diff --git a/src/Mgr/Text/PlayerbotTextMgr.cpp b/src/Mgr/Text/PlayerbotTextMgr.cpp
+index e0e9128..30f9947 100644
+--- a/src/Mgr/Text/PlayerbotTextMgr.cpp
++++ b/src/Mgr/Text/PlayerbotTextMgr.cpp
+@@ -82,13 +82,14 @@ std::string PlayerbotTextMgr::GetBotText(std::string name)
+         return "";
+     }
+ 
+-    if (botTexts[name].empty())
++    auto const found = botTexts.find(name);
++    if (found == botTexts.end() || found->second.empty())
+     {
+         LOG_ERROR("playerbots", "Can't get bot text {}! No bots texts for this name!", name);
+         return "";
+     }
+ 
+-    std::vector<BotTextEntry>& list = botTexts[name];
++    std::vector<BotTextEntry> const& list = found->second;
+     BotTextEntry textEntry = list[urand(0, list.size() - 1)];
+     return !textEntry.m_text[GetLocalePriority()].empty() ? textEntry.m_text[GetLocalePriority()] : textEntry.m_text[0];
+ }
+@@ -130,13 +131,14 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::map<std::
+         LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts loaded!", replyType);
+         return "";
+     }
+-    if (botTexts["reply"].empty())
++    auto const found = botTexts.find("reply");
++    if (found == botTexts.end() || found->second.empty())
+     {
+         LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts replies!", replyType);
+         return "";
+     }
+ 
+-    std::vector<BotTextEntry>& list = botTexts["reply"];
++    std::vector<BotTextEntry> const& list = found->second;
+     std::vector<BotTextEntry> proper_list;
+     for (auto text : list)
+     {
+@@ -168,10 +170,11 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::string na
+ 
+ bool PlayerbotTextMgr::rollTextChance(std::string name)
+ {
+-    if (!botTextChance[name])
++    auto const chance = botTextChance.find(name);
++    if (chance == botTextChance.end() || !chance->second)
+         return true;
+ 
+-    return urand(0, 100) < botTextChance[name];
++    return urand(0, 100) < chance->second;
+ }
+ 
+ bool PlayerbotTextMgr::GetBotText(std::string name, std::string& text)
+diff --git a/src/Mgr/Text/PlayerbotTextMgr.h b/src/Mgr/Text/PlayerbotTextMgr.h
+index 646277e..a60be19 100644
+--- a/src/Mgr/Text/PlayerbotTextMgr.h
++++ b/src/Mgr/Text/PlayerbotTextMgr.h
+@@ -8,6 +8,7 @@
+ #define PLAYERBOTS_PLAYERBOTTEXTMGR_H
+ 
+ #include "Common.h"
++#include <atomic>
+ #include <map>
+ #include <vector>
+ 
+@@ -102,7 +103,8 @@ private:
+ 
+     std::map<std::string, std::vector<BotTextEntry>> botTexts;
+     std::map<std::string, uint32> botTextChance;
+-    uint32 botTextLocalePriority[TOTAL_LOCALES];
++    // Counted at master login, reset by bots on any map thread
++    std::atomic<uint32> botTextLocalePriority[TOTAL_LOCALES];
+ };
+ 
+ #endif

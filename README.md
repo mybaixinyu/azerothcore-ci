@@ -143,6 +143,21 @@ build instead of being silently skipped.
   world update hook. Not covered: the whisper `logout` hotfix (mod-playerbots#1838) is a
   re-entrancy problem on the world thread, not a threading one, and the level-reset hook
   is disabled in this realm's config.
+- `module/0011-playerbots-shared-tables.patch` — third part, the module's own static tables
+  that bots on different map threads write at the same time. Tables filled the first time
+  a bot needs them (chat prefixes, unsecured commands, emotes, suggestion factions and
+  dungeons, inventory error texts, mail commands, craft skill spells, passive-mode
+  allow lists) are filled under `std::call_once`, or built at static initialization where
+  the table has no duplicate keys; the per-class trainer cache is filled and copied under
+  a mutex, so it still keeps the trainers of the first bot of each class. Lookups that used
+  `operator[]` on a shared table and so inserted every missing key (bot texts and their
+  chances, class and spec names, mail commands, craft spells, inventory errors, the
+  custom-strategy cache) use `find` and take the existing not-found branch. The
+  crafting-material cache `IsUsedBySkill` grows at runtime and gets a `std::shared_mutex`,
+  and the bot-text locale counters, reset from map threads, become atomics. Table contents
+  and lookup results are unchanged. Not covered: `IsUsedBySkill` caches by item only, so
+  an item used by any profession counts as used by all of them; that is not a threading
+  problem and is left as it is.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

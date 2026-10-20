@@ -1,0 +1,111 @@
+diff --git a/src/Ai/Base/Actions/GossipHelloAction.cpp b/src/Ai/Base/Actions/GossipHelloAction.cpp
+index b1bd617..f7e9121 100644
+--- a/src/Ai/Base/Actions/GossipHelloAction.cpp
++++ b/src/Ai/Base/Actions/GossipHelloAction.cpp
+@@ -7,10 +7,57 @@
+ #include "GossipHelloAction.h"
+ #include "Event.h"
+ #include "GossipDef.h"
++#include "ObjectMgr.h"
+ #include "PlayerbotOperations.h"
+ #include "PlayerbotWorldThreadProcessor.h"
+ #include "Playerbots.h"
+ 
++// What the bot tells its master is read in the master's client language, not the bot's session one
++static LocaleConstant MasterLocale(Player* master)
++{
++    return master && master->GetSession() ? master->GetSession()->GetSessionDbLocaleIndex() : DEFAULT_LOCALE;
++}
++
++// A gossip option's text in a locale, picked the way GossipMenu::AddMenuItem picks it
++static std::string GossipOptionText(GossipMenuItems const& option, LocaleConstant locale)
++{
++    std::string text;
++    if (BroadcastText const* broadcast = sObjectMgr->GetBroadcastText(option.OptionBroadcastTextID))
++    {
++        ObjectMgr::GetLocaleString(broadcast->MaleText, locale, text);
++        return text;
++    }
++
++    text = option.OptionText;
++    if (locale != DEFAULT_LOCALE)
++        if (GossipMenuItemsLocale const* optionLocale =
++                sObjectMgr->GetGossipMenuItemsLocale(MAKE_PAIR32(option.MenuID, option.OptionID)))
++            ObjectMgr::GetLocaleString(optionLocale->OptionText, locale, text);
++
++    return text;
++}
++
++// The menu was built in the bot's locale. Re-read an item in the master's when it came from the menu's database
++// options: same option id and the same text in the bot's locale. Items a script added keep their text.
++static std::string LocalizedMenuItem(GossipMenu const& menu, uint32 itemId, GossipMenuItem const& item,
++                                     LocaleConstant locale)
++{
++    if (locale == menu.GetLocale())
++        return item.Message;
++
++    GossipMenuItemsMapBounds options = sObjectMgr->GetGossipMenuItemsMapBounds(menu.GetMenuId());
++    for (auto itr = options.first; itr != options.second; ++itr)
++    {
++        if (itr->second.OptionID != itemId || GossipOptionText(itr->second, menu.GetLocale()) != item.Message)
++            continue;
++
++        std::string text = GossipOptionText(itr->second, locale);
++        return text.empty() ? item.Message : text;
++    }
++
++    return item.Message;
++}
++
+ bool GossipHelloAction::Execute(Event event)
+ {
+     ObjectGuid guid;
+@@ -43,13 +90,31 @@ void GossipHelloAction::TellGossipText(uint32 textId)
+ 
+     if (GossipText const* text = sObjectMgr->GetGossipText(textId))
+     {
++        // In the master's language, picked the way the core answers CMSG_NPC_TEXT_QUERY
++        LocaleConstant const locale = MasterLocale(GetMaster());
++        NpcTextLocale const* textLocale = locale != DEFAULT_LOCALE ? sObjectMgr->GetNpcTextLocale(textId) : nullptr;
+         for (uint8 i = 0; i < MAX_GOSSIP_TEXT_OPTIONS; i++)
+         {
+-            std::string const text0 = text->Options[i].Text_0;
++            std::string text0, text1;
++            if (BroadcastText const* broadcast = sObjectMgr->GetBroadcastText(text->Options[i].BroadcastTextID))
++            {
++                text0 = broadcast->GetText(locale, GENDER_MALE, true);
++                text1 = broadcast->GetText(locale, GENDER_FEMALE, true);
++            }
++            else
++            {
++                text0 = text->Options[i].Text_0;
++                text1 = text->Options[i].Text_1;
++                if (textLocale)
++                {
++                    ObjectMgr::GetLocaleString(textLocale->Text_0[i], locale, text0);
++                    ObjectMgr::GetLocaleString(textLocale->Text_1[i], locale, text1);
++                }
++            }
++
+             if (!text0.empty())
+                 botAI->TellMasterNoFacing(text0);
+ 
+-            std::string const text1 = text->Options[i].Text_1;
+             if (!text1.empty())
+                 botAI->TellMasterNoFacing(text1);
+         }
+@@ -69,12 +134,12 @@ void GossipHelloAction::TellGossipMenus()
+         TellGossipText(textId);
+     }
+ 
++    LocaleConstant const locale = MasterLocale(GetMaster());
+     GossipMenuItemContainer const& items = menu.GetMenuItems();
+     for (auto iter = items.begin(); iter != items.end(); iter++)
+     {
+-        GossipMenuItem const* item = &(iter->second);
+         std::ostringstream out;
+-        out << "[" << iter->first << "] " << item->Message;
++        out << "[" << iter->first << "] " << LocalizedMenuItem(menu, iter->first, iter->second, locale);
+         botAI->TellMasterNoFacing(out.str());
+     }
+ }

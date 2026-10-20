@@ -114,6 +114,14 @@ build instead of being silently skipped.
   happen up to a tick (queued packets) or about 50 ms (tasks) later, as a client's would.
   Related upstream: mod-playerbots#2474. Inventory of the remaining hazards:
   notes/mt-audit-2026-10-20.md in the server workspace.
+- `module/0009-playerbots-gossip-master-locale.patch` — the `talk` command told the
+  master the NPC's text and gossip options in English: the bot's gossip menu is built in
+  the bot session's locale, and the NPC text read the default fields. Both are now looked
+  up in the master's locale, the way the core does for a client (broadcast text first,
+  then `npc_text_locale` / `gossip_menu_option_locale`). An option is relocalized only
+  when it matches a database option of the menu by id and by its text in the bot's
+  locale, so options a script added keep their text; a missing translation falls back
+  to the original. The bot's own menu is untouched.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

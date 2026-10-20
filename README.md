@@ -99,6 +99,21 @@ build instead of being silently skipped.
   logs `Thick Hide talent ... but aura ...` with the bot's state whenever the two
   disagree, to find out when the aura goes missing. Upstream marks the check
   `@todo: fix cat druid hardcode`; no issue filed yet.
+- `module/0008-playerbots-world-thread-packets.patch` — first part of making
+  `MapUpdate.Threads > 1` safe for the module without moving the AI off the map threads.
+  The core processes every client packet that touches shared state (groups, guilds,
+  arena teams, battleground queues, mail, gossip scripts, ready checks, instance resets)
+  on the world thread, which never runs while maps update; bot actions called those
+  handlers directly on their map thread. They now queue the packet on the bot's session,
+  which `HandleBotPackets` drains on the world thread, as upstream already does for loot
+  and LFG. Where the action reads the outcome right away (accepting a group invite,
+  turning in a guild charter, picking a gossip option) the call and the follow-up run as
+  one `BotWorldThreadTask` on `PlayerbotWorldThreadProcessor`. Handlers the core marks
+  world-only but which only touch the bot's own map (trade, duel, quest sharing, logout
+  cancel, mount animation, next-mail query) are left as they were. Those actions now
+  happen up to a tick (queued packets) or about 50 ms (tasks) later, as a client's would.
+  Related upstream: mod-playerbots#2474. Inventory of the remaining hazards:
+  notes/mt-audit-2026-10-20.md in the server workspace.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

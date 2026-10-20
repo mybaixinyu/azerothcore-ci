@@ -1,0 +1,476 @@
+diff --git a/src/Ai/Base/Actions/AcceptBattlegroundInvitationAction.cpp b/src/Ai/Base/Actions/AcceptBattlegroundInvitationAction.cpp
+index 635010e..c780e7b 100644
+--- a/src/Ai/Base/Actions/AcceptBattlegroundInvitationAction.cpp
++++ b/src/Ai/Base/Actions/AcceptBattlegroundInvitationAction.cpp
+@@ -18,7 +18,7 @@ bool AcceptBgInvitationAction::Execute(Event /*event*/)
+ 
+     WorldPacket packet(CMSG_BATTLEFIELD_PORT, 20);
+     packet << type << unk2 << (uint32)bgTypeId_ << unk << action;
+-    bot->GetSession()->HandleBattleFieldPortOpcode(packet);
++    bot->GetSession()->QueuePacket(new WorldPacket(packet));  // battleground queues are world-thread state
+ 
+     botAI->ResetStrategies();
+ 
+diff --git a/src/Ai/Base/Actions/AcceptInvitationAction.cpp b/src/Ai/Base/Actions/AcceptInvitationAction.cpp
+index 3a142a8..a2d4cdb 100644
+--- a/src/Ai/Base/Actions/AcceptInvitationAction.cpp
++++ b/src/Ai/Base/Actions/AcceptInvitationAction.cpp
+@@ -8,6 +8,8 @@
+ #include "Event.h"
+ #include "ObjectAccessor.h"
+ #include "PlayerbotAIConfig.h"
++#include "PlayerbotOperations.h"
++#include "PlayerbotWorldThreadProcessor.h"
+ #include "PlayerbotSecurity.h"
+ #include "PlayerbotTextMgr.h"
+ #include "Playerbots.h"
+@@ -27,35 +29,50 @@ bool AcceptInvitationAction::Execute(Event /*event*/)
+         WorldPacket data(SMSG_GROUP_DECLINE, 10);
+         data << bot->GetName();
+         inviter->SendDirectMessage(&data);
+-        bot->UninviteFromGroup();
++        // Group invites are world-thread state
++        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<BotWorldThreadTask>(
++            bot->GetGUID(), "DeclineGroupInvitation", [](Player* bot, PlayerbotAI*) { bot->UninviteFromGroup(); }));
+         return false;
+     }
+ 
+     if (bot->isAFK() && !IsSelfBot(bot))
+         bot->ToggleAFK();
+ 
+-    WorldPacket p;
+-    uint32 roles_mask = 0;
+-    p << roles_mask;
+-    bot->GetSession()->HandleGroupAcceptOpcode(p);
++    // Joining changes the group, which other maps' updates read: join on the world thread, where a client's
++    // CMSG_GROUP_ACCEPT is handled, and set the bot up there once it is in
++    PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<BotWorldThreadTask>(
++        bot->GetGUID(), "AcceptGroupInvitation",
++        [inviterGuid = inviter->GetGUID()](Player* bot, PlayerbotAI* botAI)
++        {
++            Player* inviter = ObjectAccessor::FindPlayer(inviterGuid);
++            if (!inviter)
++                return;
+ 
+-    if (!bot->GetGroup() || !bot->GetGroup()->IsMember(inviter->GetGUID()))
+-        return false;
++            WorldPacket p(CMSG_GROUP_ACCEPT);
++            uint32 roles_mask = 0;
++            p << roles_mask;
++            bot->GetSession()->HandleGroupAcceptOpcode(p);
+ 
+-    if (sRandomPlayerbotMgr.IsRandomBot(bot))
+-        botAI->SetMaster(inviter);
+-    // else
+-    // PlayerbotRepository::instance().Save(botAI);
++            if (!bot->GetGroup() || !bot->GetGroup()->IsMember(inviter->GetGUID()))
++                return;
+ 
+-    botAI->ResetStrategies();
+-    botAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
+-    botAI->Reset();
++            if (sRandomPlayerbotMgr.IsRandomBot(bot))
++                botAI->SetMaster(inviter);
++            // else
++            // PlayerbotRepository::instance().Save(botAI);
+ 
+-    botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
++            botAI->ResetStrategies();
++            botAI->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
++            botAI->Reset();
+ 
+-    if (sPlayerbotAIConfig.SummonWhenGroup && bot->GetDistance(inviter) > sPlayerbotAIConfig.SightDistance)
+-    {
+-        Teleport(inviter, bot, true);
+-    }
++            botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
++
++            if (sPlayerbotAIConfig.SummonWhenGroup && bot->GetDistance(inviter) > sPlayerbotAIConfig.SightDistance)
++            {
++                Action* action = botAI->GetAiObjectContext()->GetAction("accept invitation");
++                if (auto* summon = dynamic_cast<AcceptInvitationAction*>(action))
++                    summon->Teleport(inviter, bot, true);
++            }
++        }));
+     return true;
+ }
+diff --git a/src/Ai/Base/Actions/ArenaTeamActions.cpp b/src/Ai/Base/Actions/ArenaTeamActions.cpp
+index e6936cc..4a89426 100644
+--- a/src/Ai/Base/Actions/ArenaTeamActions.cpp
++++ b/src/Ai/Base/Actions/ArenaTeamActions.cpp
+@@ -40,8 +40,7 @@ bool ArenaTeamAcceptAction::Execute(Event event)
+ 
+     if (accept)
+     {
+-        WorldPacket data(CMSG_ARENA_TEAM_ACCEPT);
+-        bot->GetSession()->HandleArenaTeamAcceptOpcode(data);
++        bot->GetSession()->QueuePacket(new WorldPacket(CMSG_ARENA_TEAM_ACCEPT));  // arena teams are world-thread state
+         std::string text = PlayerbotTextMgr::instance().GetBotTextOrDefault(
+             "arena_team_thanks_for_invite", "Thanks for the invite!", {});
+         bot->Say(text, LANG_UNIVERSAL);
+@@ -51,8 +50,7 @@ bool ArenaTeamAcceptAction::Execute(Event event)
+     }
+     else
+     {
+-        WorldPacket data(CMSG_ARENA_TEAM_DECLINE);
+-        bot->GetSession()->HandleArenaTeamDeclineOpcode(data);
++        bot->GetSession()->QueuePacket(new WorldPacket(CMSG_ARENA_TEAM_DECLINE));
+         LOG_INFO("playerbots", "Bot {} <{}> declines Arena Team invite", bot->GetGUID().ToString().c_str(),
+                  bot->GetName().c_str());
+         return false;
+diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+index 6396770..b46b6bc 100644
+--- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
++++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+@@ -723,7 +723,7 @@ bool BGStatusAction::LeaveBG(PlayerbotAI* botAI)
+     packet << uint32(0);
+     packet << uint16(0);
+ 
+-    bot->GetSession()->HandleBattlefieldLeaveOpcode(packet);
++    bot->GetSession()->QueuePacket(new WorldPacket(packet));  // battleground queues are world-thread state
+ 
+     botAI->ResetStrategies(!isRandomBot);
+     botAI->GetAiObjectContext()->GetValue<uint32>("bg type")->Set(0);
+@@ -1057,7 +1057,7 @@ bool BGStatusCheckAction::Execute(Event /*event*/)
+         return false;
+ 
+     WorldPacket packet(CMSG_BATTLEFIELD_STATUS);
+-    bot->GetSession()->HandleBattlefieldStatusOpcode(packet);
++    bot->GetSession()->QueuePacket(new WorldPacket(packet));  // battleground queues are world-thread state
+ 
+     LOG_INFO("playerbots", "Bot {} <{}> ({} {}) : Checking BG invite status", bot->GetGUID().ToString().c_str(),
+              bot->GetName(), bot->GetLevel(), bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H");
+diff --git a/src/Ai/Base/Actions/GossipHelloAction.cpp b/src/Ai/Base/Actions/GossipHelloAction.cpp
+index 2eb5e52..b1bd617 100644
+--- a/src/Ai/Base/Actions/GossipHelloAction.cpp
++++ b/src/Ai/Base/Actions/GossipHelloAction.cpp
+@@ -7,6 +7,8 @@
+ #include "GossipHelloAction.h"
+ #include "Event.h"
+ #include "GossipDef.h"
++#include "PlayerbotOperations.h"
++#include "PlayerbotWorldThreadProcessor.h"
+ #include "Playerbots.h"
+ 
+ bool GossipHelloAction::Execute(Event event)
+@@ -87,15 +89,28 @@ bool GossipHelloAction::ProcessGossip(int32 menuToSelect, bool silent)
+         return false;
+     }
+ 
+-    WorldPacket p;
++    WorldPacket p(CMSG_GOSSIP_SELECT_OPTION);
+     std::string code;
+     p << GetMaster()->GetTarget();
+     p << menu.GetMenuId() << menuToSelect;
+     p << code;
+-    bot->GetSession()->HandleGossipSelectOptionOpcode(p);
+ 
+-    if (!silent)
+-        TellGossipMenus();
++    // Gossip scripts may touch world-thread state: select on the world thread, where a client's
++    // CMSG_GOSSIP_SELECT_OPTION is handled, and report the menu it leads to from there
++    PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<BotWorldThreadTask>(
++        bot->GetGUID(), "GossipSelect",
++        [p, silent](Player* bot, PlayerbotAI* botAI)
++        {
++            WorldPacket packet(p);
++            bot->GetSession()->HandleGossipSelectOptionOpcode(packet);
++
++            if (silent)
++                return;
++
++            Action* action = botAI->GetAiObjectContext()->GetAction("gossip hello");
++            if (auto* gossip = dynamic_cast<GossipHelloAction*>(action))
++                gossip->TellGossipMenus();
++        }));
+ 
+     return true;
+ }
+diff --git a/src/Ai/Base/Actions/GuildAcceptAction.cpp b/src/Ai/Base/Actions/GuildAcceptAction.cpp
+index 72dd5ca..d3188a6 100644
+--- a/src/Ai/Base/Actions/GuildAcceptAction.cpp
++++ b/src/Ai/Base/Actions/GuildAcceptAction.cpp
+@@ -48,13 +48,12 @@ bool GuildAcceptAction::Execute(Event event)
+ 
+     if (accept)
+     {
+-        WorldPackets::Guild::AcceptGuildInvite data = WorldPacket(CMSG_GUILD_ACCEPT);
+-        bot->GetSession()->HandleGuildAcceptOpcode(data);
++        // Guilds are world-thread state
++        bot->GetSession()->QueuePacket(new WorldPacket(CMSG_GUILD_ACCEPT));
+     }
+     else
+     {
+-        WorldPackets::Guild::GuildDeclineInvitation data = WorldPacket(CMSG_GUILD_DECLINE);
+-        bot->GetSession()->HandleGuildDeclineOpcode(data);
++        bot->GetSession()->QueuePacket(new WorldPacket(CMSG_GUILD_DECLINE));
+     }
+ 
+     return true;
+diff --git a/src/Ai/Base/Actions/GuildCreateActions.cpp b/src/Ai/Base/Actions/GuildCreateActions.cpp
+index 605fa68..a7c9038 100644
+--- a/src/Ai/Base/Actions/GuildCreateActions.cpp
++++ b/src/Ai/Base/Actions/GuildCreateActions.cpp
+@@ -9,6 +9,8 @@
+ #include "BudgetValues.h"
+ #include "Event.h"
+ #include "GuildMgr.h"
++#include "PlayerbotOperations.h"
++#include "PlayerbotWorldThreadProcessor.h"
+ #include "Playerbots.h"
+ #include "RandomPlayerbotFactory.h"
+ #include "ServerFacade.h"
+@@ -222,43 +224,49 @@ bool PetitionTurnInAction::Execute(Event /*event*/)
+         if (!pCreature)
+             continue;
+ 
+-        WorldPacket data(CMSG_TURN_IN_PETITION, 8);
+-
+         Item* petition = petitions.front();
+ 
+         if (!petition)
+             return false;
+ 
+-        data << petition->GetGUID();
+-
+-        bot->GetSession()->HandleTurnInPetitionOpcode(data);
+-
+-        if (bot->GetGuildId())
+-        {
+-            // Ensure that bot has at least 10g for HandleSetEmblem can be managed core side
+-            // (EMBLEM_PRICE = 10 * GOLD in core)
+-            static constexpr uint32 REQUIRED = 10 * GOLD;
+-            uint32 have = bot->GetMoney();               // actual money earned by bot in copper
+-            if (have < REQUIRED)
++        // Turning in creates the guild, world-thread state: do it on the world thread, where a client's
++        // CMSG_TURN_IN_PETITION is handled, and set the new guild up there
++        PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<BotWorldThreadTask>(
++            bot->GetGUID(), "TurnInPetition",
++            [petitionGuid = petition->GetGUID()](Player* bot, PlayerbotAI* /*botAI*/)
+             {
+-                bot->ModifyMoney(int32(REQUIRED - have)); // add only the missing amount to bot to reach 10g
+-            }
+-
+-            Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+-
+-            uint32 st, cl, br, bc, bg;
+-            bg = urand(0, 51);
+-            bc = urand(0, 17);
+-            cl = urand(0, 17);
+-            br = urand(0, 7);
+-            st = urand(0, 180);
+-            EmblemInfo emblemInfo(st, cl, br, bc, bg);
+-
+-            guild->HandleSetEmblem(emblemInfo); // official core handling
+-
+-            // LANG_GUILD_VETERAN -> can invite
+-            guild->HandleSetRankInfo(2, {}, GR_RIGHT_GCHATLISTEN | GR_RIGHT_GCHATSPEAK | GR_RIGHT_INVITE);
+-        }
++                WorldPacket data(CMSG_TURN_IN_PETITION, 8);
++                data << petitionGuid;
++
++                bot->GetSession()->HandleTurnInPetitionOpcode(data);
++
++                if (bot->GetGuildId())
++                {
++                    // Ensure that bot has at least 10g for HandleSetEmblem can be managed core side
++                    // (EMBLEM_PRICE = 10 * GOLD in core)
++                    static constexpr uint32 REQUIRED = 10 * GOLD;
++                    uint32 have = bot->GetMoney();               // actual money earned by bot in copper
++                    if (have < REQUIRED)
++                    {
++                        bot->ModifyMoney(int32(REQUIRED - have)); // add only the missing amount to bot to reach 10g
++                    }
++
++                    Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
++
++                    uint32 st, cl, br, bc, bg;
++                    bg = urand(0, 51);
++                    bc = urand(0, 17);
++                    cl = urand(0, 17);
++                    br = urand(0, 7);
++                    st = urand(0, 180);
++                    EmblemInfo emblemInfo(st, cl, br, bc, bg);
++
++                    guild->HandleSetEmblem(emblemInfo); // official core handling
++
++                    // LANG_GUILD_VETERAN -> can invite
++                    guild->HandleSetRankInfo(2, {}, GR_RIGHT_GCHATLISTEN | GR_RIGHT_GCHATSPEAK | GR_RIGHT_INVITE);
++                }
++            }));
+ 
+         return true;
+     }
+diff --git a/src/Ai/Base/Actions/GuildManagementActions.cpp b/src/Ai/Base/Actions/GuildManagementActions.cpp
+index 93dbf47..095cd51 100644
+--- a/src/Ai/Base/Actions/GuildManagementActions.cpp
++++ b/src/Ai/Base/Actions/GuildManagementActions.cpp
+@@ -302,8 +302,7 @@ bool GuildLeaveAction::Execute(Event event)
+         return false;
+     }
+ 
+-    WorldPackets::Guild::GuildLeave data = WorldPacket(CMSG_GUILD_LEAVE);
+-    bot->GetSession()->HandleGuildLeaveOpcode(data);
++    bot->GetSession()->QueuePacket(new WorldPacket(CMSG_GUILD_LEAVE));  // guilds are world-thread state
+     return true;
+ }
+ 
+diff --git a/src/Ai/Base/Actions/InviteToGroupAction.cpp b/src/Ai/Base/Actions/InviteToGroupAction.cpp
+index cfc8195..eb5bfbb 100644
+--- a/src/Ai/Base/Actions/InviteToGroupAction.cpp
++++ b/src/Ai/Base/Actions/InviteToGroupAction.cpp
+@@ -43,11 +43,11 @@ bool InviteToGroupAction::Invite(Player* inviter, Player* player)
+             }
+     }
+ 
+-    WorldPacket p;
++    WorldPacket p(CMSG_GROUP_INVITE);
+     uint32 roles_mask = 0;
+     p << player->GetName();
+     p << roles_mask;
+-    inviter->GetSession()->HandleGroupInviteOpcode(p);
++    inviter->GetSession()->QueuePacket(new WorldPacket(p));  // groups are world-thread state
+ 
+     return true;
+ }
+diff --git a/src/Ai/Base/Actions/MailAction.cpp b/src/Ai/Base/Actions/MailAction.cpp
+index d47202e..faed72a 100644
+--- a/src/Ai/Base/Actions/MailAction.cpp
++++ b/src/Ai/Base/Actions/MailAction.cpp
+@@ -94,10 +94,12 @@ public:
+             out << mail->subject << ", |cffffff00" << ChatHelper::formatMoney(mail->money) << "|cff00ff00 processed";
+             botAI->TellMaster(out.str());
+ 
+-            WorldPacket packet;
++            WorldPacket packet(CMSG_MAIL_TAKE_MONEY);
+             packet << mailbox;
+             packet << mail->messageID;
+-            bot->GetSession()->HandleMailTakeMoney(packet);
++            // Taking a COD item mails the sender, who may be online on another map, so mail goes through the
++            // world thread; queueing all three keeps take before delete
++            bot->GetSession()->QueuePacket(new WorldPacket(packet));
+             RemoveMail(bot, mail->messageID, mailbox);
+         }
+         else if (!mail->items.empty())
+@@ -109,7 +111,7 @@ public:
+ 
+             for (std::vector<uint32>::iterator i = guids.begin(); i != guids.end(); ++i)
+             {
+-                WorldPacket packet;
++                WorldPacket packet(CMSG_MAIL_TAKE_ITEM);
+                 packet << mailbox;
+                 packet << mail->messageID;
+                 packet << *i;
+@@ -119,7 +121,7 @@ public:
+                 std::ostringstream out;
+                 out << mail->subject << ", " << ChatHelper::FormatItem(item->GetTemplate()) << "|cff00ff00 processed";
+ 
+-                bot->GetSession()->HandleMailTakeItem(packet);
++                bot->GetSession()->QueuePacket(new WorldPacket(packet));
+                 botAI->TellMaster(out.str());
+             }
+ 
+@@ -318,11 +320,11 @@ bool MailAction::Execute(Event event)
+ 
+ void MailProcessor::RemoveMail(Player* bot, uint32 id, ObjectGuid mailbox)
+ {
+-    WorldPacket packet;
++    WorldPacket packet(CMSG_MAIL_DELETE);
+     packet << mailbox;
+     packet << id;
+     packet << (uint32)0;  // mailTemplateId
+-    bot->GetSession()->HandleMailDelete(packet);
++    bot->GetSession()->QueuePacket(new WorldPacket(packet));
+ }
+ 
+ ObjectGuid MailProcessor::FindMailbox(PlayerbotAI* botAI)
+diff --git a/src/Ai/Base/Actions/ReadyCheckAction.cpp b/src/Ai/Base/Actions/ReadyCheckAction.cpp
+index bef6a2a..22cccf5 100644
+--- a/src/Ai/Base/Actions/ReadyCheckAction.cpp
++++ b/src/Ai/Base/Actions/ReadyCheckAction.cpp
+@@ -16,7 +16,7 @@ static void SendReadyConfirm(Player* bot)
+     WorldPacket packet(MSG_RAID_READY_CHECK);
+     packet << bot->GetGUID();
+     packet << uint8(1);
+-    bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
++    bot->GetSession()->QueuePacket(new WorldPacket(packet));  // the answer is stored in the group, world-thread state
+ }
+ 
+ std::string const formatPercent(std::string const name, uint8 value, float percent)
+diff --git a/src/Ai/Base/Actions/ResetInstancesAction.cpp b/src/Ai/Base/Actions/ResetInstancesAction.cpp
+index 0199370..0033136 100644
+--- a/src/Ai/Base/Actions/ResetInstancesAction.cpp
++++ b/src/Ai/Base/Actions/ResetInstancesAction.cpp
+@@ -10,9 +10,8 @@
+ 
+ bool ResetInstancesAction::Execute(Event /*event*/)
+ {
+-    WorldPacket packet(CMSG_RESET_INSTANCES, 0);
+-    WorldPackets::Instance::ResetInstances resetInstance(std::move(packet));
+-    bot->GetSession()->HandleResetInstancesOpcode(resetInstance);
++    // Resets the group's instance binds, world-thread state
++    bot->GetSession()->QueuePacket(new WorldPacket(CMSG_RESET_INSTANCES, 0));
+ 
+     return true;
+ }
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp b/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp
+index 7775334..551e8f5 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp
+@@ -1012,7 +1012,7 @@ bool IccGunshipRocketPackSetupAction::AcquireRocketPack()
+     WorldPacket gossipSelect(CMSG_GOSSIP_SELECT_OPTION);
+     gossipSelect << zafod->GetGUID();
+     gossipSelect << uint32(ZAFOD_GOSSIP_MENU_ID) << uint32(ZAFOD_GOSSIP_OPTION);
+-    bot->GetSession()->HandleGossipSelectOptionOpcode(gossipSelect);
++    bot->GetSession()->QueuePacket(new WorldPacket(gossipSelect));  // gossip scripts may touch world-thread state
+     return true;
+ }
+ 
+diff --git a/src/Script/WorldThr/PlayerbotOperations.h b/src/Script/WorldThr/PlayerbotOperations.h
+index 5edf181..4e152f8 100644
+--- a/src/Script/WorldThr/PlayerbotOperations.h
++++ b/src/Script/WorldThr/PlayerbotOperations.h
+@@ -23,6 +23,7 @@
+ #include "UseMeetingStoneAction.h"
+ #include "WorldSession.h"
+ #include "WorldSessionMgr.h"
++#include <functional>
+ 
+ // Group invite operation
+ class GroupInviteOperation : public PlayerbotOperation
+@@ -549,4 +550,35 @@ private:
+     ObjectGuid m_botGuid;
+ };
+ 
++// Bot code that changes world-thread state and acts on the outcome at once (joining a group, turning in a
++// charter): run as one step on the world thread, where a client's packet for it would be handled too
++class BotWorldThreadTask : public PlayerbotOperation
++{
++public:
++    BotWorldThreadTask(ObjectGuid botGuid, std::string name, std::function<void(Player*, PlayerbotAI*)> task)
++        : m_botGuid(botGuid), m_name(std::move(name)), m_task(std::move(task))
++    {
++    }
++
++    bool Execute() override
++    {
++        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
++        PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
++        if (!botAI)
++            return false;
++
++        m_task(bot, botAI);
++        return true;
++    }
++
++    ObjectGuid GetBotGuid() const override { return m_botGuid; }
++    std::string GetName() const override { return m_name; }
++    bool IsValid() const override { return ObjectAccessor::FindPlayer(m_botGuid) != nullptr; }
++
++private:
++    ObjectGuid m_botGuid;
++    std::string m_name;
++    std::function<void(Player*, PlayerbotAI*)> m_task;
++};
++
+ #endif

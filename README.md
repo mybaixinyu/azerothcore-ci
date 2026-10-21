@@ -57,7 +57,8 @@ the playerbots module was compiled with `-fsanitize=thread`, bundles the compile
 TSan runtime and the `.dSYM`s, and uploads `server-pb-macos-arm64-tsan` with its own
 ccache. `scripts/install-artifact.sh --tsan <run-id>` puts it in `server-pb/bin-tsan/`
 only, after checking its core matches the installed one; it shares `etc/`, data and
-`sql-source/`, and is started by hand for a test run.
+`sql-source/`, and is started by hand for a test run. Each install replaces `bin-tsan/` wholesale
+(`rsync --delete`), so start it from another directory, which then holds the logs and reports.
 
 ## Patches
 

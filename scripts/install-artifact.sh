@@ -9,7 +9,8 @@
 #
 # A ThreadSanitizer build goes into server-pb/bin-tsan/ only, next to the live
 # binaries, and shares etc/, data and sql-source with them: it is started by hand
-# for a test run and never replaces what the console starts.
+# for a test run and never replaces what the console starts. bin-tsan/ is replaced
+# wholesale, so run it from another directory and keep its logs and reports there.
 set -euo pipefail
 
 # A download that spans an idle-sleep window dies mid-transfer: gh reports

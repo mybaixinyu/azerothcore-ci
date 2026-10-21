@@ -12,6 +12,10 @@ on:
       bridge_ref:
         description: 'Aldori15/mod-questie-bridge ref'
         default: 'main'
+      tsan:
+        description: 'Build with ThreadSanitizer (separate artifact, never installed into server-pb)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -24,6 +28,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: 'true'
+      VARIANT: ${{ inputs.tsan && '-tsan' || '' }}
 
     steps:
       - name: Checkout CI repo
@@ -75,17 +80,19 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache:xcode-27:${{ inputs.core_ref }}:${{ github.run_id }}
+          key: ccache:xcode-27${{ env.VARIANT }}:${{ inputs.core_ref }}:${{ github.run_id }}
           restore-keys: |
-            ccache:xcode-27:${{ inputs.core_ref }}:
-            ccache:xcode-27:
+            ccache:xcode-27${{ env.VARIANT }}:${{ inputs.core_ref }}:
+            ccache:xcode-27${{ env.VARIANT }}:
 
       # Flags mirror the local build; keep the two in step when either changes.
+      # TSan reports need line numbers, so that variant also carries debug info.
       - name: Configure
         run: |
           cmake -S src -B build -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_TYPE=${{ inputs.tsan && 'RelWithDebInfo' || 'Release' }} \
+            -DTSAN=${{ inputs.tsan && 'ON' || 'OFF' }} \
             -DAPPS_BUILD=all \
             -DTOOLS_BUILD=none \
             -DSCRIPTS=static \
@@ -100,6 +107,14 @@ jobs:
             -DMYSQL_ADD_INCLUDE_PATH=/opt/homebrew/opt/mysql@8.4/include/mysql \
             -DREADLINE_INCLUDE_DIR=/opt/homebrew/opt/readline/include \
             -DREADLINE_LIBRARY=/opt/homebrew/opt/readline/lib/libreadline.dylib
+
+      # The core only adds -fsanitize=thread to targets that link its option interface;
+      # the module is where the races were, so check its flags rather than assume them.
+      - name: Check the module is instrumented
+        if: inputs.tsan
+        run: |
+          awk '/^build [^:]*mod-playerbots[^:]*TravelMgr\.cpp\.o:/{f=1} f&&/^  FLAGS/{print; exit}' build/build.ninja \
+            | grep -q -- '-fsanitize=thread'
 
       # The ccache statistics live in the cache directory and accumulate across runs;
       # zero them so the report below describes this build only.
@@ -121,6 +136,15 @@ jobs:
 
       - name: Bundle dylibs
         run: ci/scripts/bundle-dylibs.sh "$GITHUB_WORKSPACE/out/bin"
+
+      # The debug info stays in the build tree's object files; the server machine has none.
+      - name: Collect debug symbols
+        if: inputs.tsan
+        run: |
+          for b in worldserver authserver; do
+            dsymutil "$GITHUB_WORKSPACE/out/bin/$b" -o "$GITHUB_WORKSPACE/out/bin/$b.dSYM"
+          done
+          du -sh "$GITHUB_WORKSPACE"/out/bin/*.dSYM
 
       # The DB updater reads its SQL from SourceDirectory, which on the server
       # machine points at the copy installed from here. base/ (fresh-install
@@ -157,6 +181,7 @@ jobs:
             echo "module_ref=${{ inputs.module_ref }} $(git -C src/modules/mod-playerbots rev-parse HEAD)"
             echo "bridge_ref=${{ inputs.bridge_ref }} $(git -C src/modules/mod-questie-bridge rev-parse HEAD)"
             echo "ci_commit=$(git -C ci rev-parse HEAD)"
+            echo "tsan=${{ inputs.tsan }}"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"
             done
@@ -179,7 +204,7 @@ jobs:
 
       - uses: actions/upload-artifact@v5
         with:
-          name: server-pb-macos-arm64
+          name: server-pb-macos-arm64${{ env.VARIANT }}
           path: stage/opt/azerothcore-pb/
           retention-days: 30
           if-no-files-found: error

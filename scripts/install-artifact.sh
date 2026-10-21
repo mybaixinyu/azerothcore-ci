@@ -5,6 +5,11 @@
 #
 #   install-artifact.sh              # newest successful run
 #   install-artifact.sh <run-id>     # a specific run
+#   install-artifact.sh --tsan <run-id>
+#
+# A ThreadSanitizer build goes into server-pb/bin-tsan/ only, next to the live
+# binaries, and shares etc/, data and sql-source with them: it is started by hand
+# for a test run and never replaces what the console starts.
 set -euo pipefail
 
 # A download that spans an idle-sleep window dies mid-transfer: gh reports
@@ -18,6 +23,24 @@ repo="mybaixinyu/azerothcore-ci"
 prefix="$HOME/WorkSpace/azerothcore/server-pb"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
+
+if [ "${1:-}" = "--tsan" ]; then
+    run_id="${2:?usage: install-artifact.sh --tsan <run-id>}"
+    echo "== run $run_id (tsan)"
+    gh run download "$run_id" -R "$repo" -n server-pb-macos-arm64-tsan -D "$staging"
+    cat "$staging/bin/BUILD-MANIFEST.txt"
+    grep -qx 'tsan=true' "$staging/bin/BUILD-MANIFEST.txt" || { echo "not a tsan build" >&2; exit 1; }
+    # The DB updater reads the shared sql-source, so the core has to be the installed one.
+    want="$(grep '^core_ref=' "$prefix/bin/BUILD-MANIFEST.txt" | awk '{print $2}')"
+    got="$(grep '^core_ref=' "$staging/bin/BUILD-MANIFEST.txt" | awk '{print $2}')"
+    [ "$want" = "$got" ] || { echo "tsan core $got differs from installed core $want" >&2; exit 1; }
+    "$staging/bin/worldserver" --version >/dev/null || {
+        echo "downloaded worldserver will not start on this machine" >&2; exit 1; }
+    rsync -a --delete "$staging/bin/" "$prefix/bin-tsan/"
+    echo "== installed into $prefix/bin-tsan"
+    "$prefix/bin-tsan/worldserver" --version | head -2
+    exit 0
+fi
 
 if pgrep -x worldserver >/dev/null || pgrep -x authserver >/dev/null; then
     echo "worldserver/authserver is running - stop it first (SIGINT, never SIGTERM)." >&2

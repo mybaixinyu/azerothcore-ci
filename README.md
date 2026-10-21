@@ -50,6 +50,15 @@ scripts/install-artifact.sh <run-id>   # a specific run
 previous binaries as `bin/*.bak-<timestamp>`, and only ever writes `*.dist`
 files into `etc/` — the live configs are left alone.
 
+### ThreadSanitizer build
+
+`-f tsan=true` builds the same sources with `-DTSAN=ON` and debug info, checks that
+the playerbots module was compiled with `-fsanitize=thread`, bundles the compiler's
+TSan runtime and the `.dSYM`s, and uploads `server-pb-macos-arm64-tsan` with its own
+ccache. `scripts/install-artifact.sh --tsan <run-id>` puts it in `server-pb/bin-tsan/`
+only, after checking its core matches the installed one; it shares `etc/`, data and
+`sql-source/`, and is started by hand for a test run.
+
 ## Patches
 
 `patches/` holds the changes that are not upstream yet. Each one is applied with

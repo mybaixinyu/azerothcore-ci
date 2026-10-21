@@ -10,6 +10,10 @@
 # gone after the next `brew upgrade openssl@3`. It is bundled as
 # <bindir>/lib/ossl-modules/legacy.dylib; the core (patch 0002) points OpenSSL's
 # provider search path there at startup.
+#
+# A sanitizer build also loads the compiler's runtime (libclang_rt.*) through
+# @rpath from the Xcode toolchain; it is bundled the same way, since it has to
+# match the compiler that built the binaries.
 set -euo pipefail
 
 bindir="${1:?usage: bundle-dylibs.sh <bindir>}"
@@ -46,6 +50,17 @@ while [ ${#queue[@]} -gt 0 ]; do
             fi
             install_name_tool -change "$dep" "@executable_path/lib/$base" "$f"
         done < <(external_deps "$f")
+        while IFS= read -r dep; do
+            base="$(basename "$dep")"
+            if [ ! -f "$libdir/$base" ]; then
+                cp "$(clang -print-resource-dir)/lib/darwin/$base" "$libdir/$base"
+                chmod u+w "$libdir/$base"
+                install_name_tool -id "@executable_path/lib/$base" "$libdir/$base"
+                codesign --force --sign - --timestamp=none "$libdir/$base" 2>/dev/null
+                bundled=$((bundled + 1))
+            fi
+            install_name_tool -change "$dep" "@executable_path/lib/$base" "$f"
+        done < <(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E '^@rpath/libclang_rt\.' || true)
         codesign --force --sign - --timestamp=none "$f" 2>/dev/null
     done
 done

@@ -110,6 +110,12 @@ build instead of being silently skipped.
   When the map updater is active, every map of `Map.dbc` (135: 47 plain, 88 instance parents) is now
   created at startup, so the table is never written after that. Base maps are cheap until a player
   loads a grid; an empty map's update only walks its (empty) player list. No upstream issue yet.
+- `0020-mapupdater-barrier-release.patch` — upstream azerothcore/azerothcore-wotlk#27724 (open PR,
+  head `45cf7fa`), taken verbatim. `MapUpdater::update_finished()` decremented the pending counter
+  with `memory_order_acquire`, so no worker's decrement was a release and `wait()` returning did not
+  make the workers' map writes visible to the world thread; on arm64 that is a real ordering gap.
+  The first TSan run here (4 map threads, 1000 bots) showed the reports pairing the world thread
+  with a map worker that the PR describes. Drop this patch once the PR is merged.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

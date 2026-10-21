@@ -1,0 +1,36 @@
+diff --git a/src/server/game/Entities/Object/ObjectGuid.h b/src/server/game/Entities/Object/ObjectGuid.h
+index a32bb2f..18ba357 100644
+--- a/src/server/game/Entities/Object/ObjectGuid.h
++++ b/src/server/game/Entities/Object/ObjectGuid.h
+@@ -20,6 +20,7 @@
+ 
+ #include "ByteBuffer.h"
+ #include "Define.h"
++#include <atomic>
+ #include <deque>
+ #include <functional>
+ #include <list>
+@@ -294,7 +295,8 @@ public:
+ protected:
+     static void HandleCounterOverflow(HighGuid high);
+     static bool GetClusterGuid(HighGuid high, uint16 realmId, ObjectGuid::LowType& clusterGuid);
+-    ObjectGuid::LowType _nextGuid;
++    // Item guids are generated on every map thread, so taking one has to be a single atomic step
++    std::atomic<ObjectGuid::LowType> _nextGuid;
+ };
+ 
+ template<HighGuid high>
+@@ -309,10 +311,11 @@ public:
+         if (GetClusterGuid(high, realmId, clusterGuid))
+             return clusterGuid;
+ 
+-        if (_nextGuid >= ObjectGuid::GetMaxCounter(high) - 1)
++        ObjectGuid::LowType guid = _nextGuid++;
++        if (guid >= ObjectGuid::GetMaxCounter(high) - 1)
+             HandleCounterOverflow(high);
+ 
+-        return _nextGuid++;
++        return guid;
+     }
+ };
+ 

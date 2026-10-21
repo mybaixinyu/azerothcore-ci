@@ -116,6 +116,13 @@ build instead of being silently skipped.
   make the workers' map writes visible to the world thread; on arm64 that is a real ordering gap.
   The first TSan run here (4 map threads, 1000 bots) showed the reports pairing the world thread
   with a map worker that the PR describes. Drop this patch once the PR is merged.
+- `0021-global-guid-generator-atomic.patch` — item guids come from one global generator, and every map
+  thread takes them (loot, created items, quest rewards, the playerbots factory equipping bots), but
+  `Generate()` read and bumped a plain counter, so two threads could hand out the same guid. The counter
+  is now a `std::atomic` and a guid is taken in one `fetch_add`; the value returned and the overflow
+  check are unchanged. Found by the second TSan run. Mail ids and pet numbers already take a lock;
+  auction and equipment set ids, and the other global guids, are only generated on the world thread.
+  Upstream AzerothCore and TrinityCore have the same plain counter; no upstream issue.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module
@@ -236,6 +243,12 @@ build instead of being silently skipped.
   lookups that bots make on their map threads used `operator[]`, which inserts an empty entry for any level
   the table does not have. Those lookups now use `find` and return an empty list, which is what the
   inserted entry held.
+- `module/0022-playerbots-battlemaster-own-map.patch` — tenth part. `GetBattleMasterGUID` (a bot queueing
+  for a battleground, on its own map thread) looked each battlemaster up in its map's creature store and
+  only then skipped the ones on another map, so it read the capitals' stores while their threads added
+  creatures; the second TSan run caught it. The map is now compared first, from the spawn data, so only
+  the bot's own map is read; the battlemaster chosen is the same. This is also the one caller of
+  `PlayerbotAI::GetUnit(CreatureData const*)`, which the 0018 note had wrongly listed as unused.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

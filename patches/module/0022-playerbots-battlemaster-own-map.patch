@@ -1,0 +1,23 @@
+diff --git a/src/Bot/RandomPlayerbotMgr.cpp b/src/Bot/RandomPlayerbotMgr.cpp
+index baddbbe9..d6e1ad7a 100644
+--- a/src/Bot/RandomPlayerbotMgr.cpp
++++ b/src/Bot/RandomPlayerbotMgr.cpp
+@@ -3242,16 +3242,14 @@ ObjectGuid RandomPlayerbotMgr::GetBattleMasterGUID(Player* bot, BattlegroundType
+         else if (spawnIt->second)
+             data = sObjectMgr->GetCreatureData(spawnIt->second);
+ 
+-        if (!data)
++        // Another map's creature store belongs to another map thread
++        if (!data || data->mapid != bot->GetMapId())
+             continue;
+ 
+         Unit* Bm = PlayerbotAI::GetUnit(data);
+         if (!Bm)
+             continue;
+ 
+-        if (bot->GetMapId() != Bm->GetMapId())
+-            continue;
+-
+         // return first available guid on map if queue from anywhere
+         if (!BattlegroundMgr::IsArenaType(bgTypeId))
+         {

@@ -84,6 +84,14 @@ build instead of being silently skipped.
   and keeps pointing at the OutdoorPvP that `Die()` freed. Keys the registry by the
   full `ObjectGuid`, and `Die()` now also clears the zone lookup that held the freed
   pointers. Seen once (2026-10-19); no upstream issue yet.
+- `0016-dismount-indoors-after-map-change.patch` — a player who changes map mounted
+  and lands indoors (the Arathi Basin start rooms) stays mounted until the first
+  move, because the indoor check that drops outdoor-only auras runs only from
+  `Player::UpdatePosition`, which a same-map teleport goes through but
+  `HandleMoveWorldportAck` does not (it only relocates). Runs
+  `CheckAreaExploreAndOutdoor()` once after the zone update there. Bots take the
+  same path. Upstream master and TrinityCore 3.3.5 behave the same; no upstream
+  issue yet.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

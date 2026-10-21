@@ -1,0 +1,14 @@
+diff --git a/src/server/game/Handlers/MovementHandler.cpp b/src/server/game/Handlers/MovementHandler.cpp
+index f21b846..763ddcf 100644
+--- a/src/server/game/Handlers/MovementHandler.cpp
++++ b/src/server/game/Handlers/MovementHandler.cpp
+@@ -274,6 +274,9 @@ void WorldSession::HandleMoveWorldportAck()
+     GetPlayer()->GetZoneAndAreaId(newzone, newarea);
+     GetPlayer()->UpdateZone(newzone, newarea);
+ 
++    // Arriving indoors must drop outdoor-only auras such as mounts before the first move
++    GetPlayer()->CheckAreaExploreAndOutdoor();
++
+     // honorless target
+     if (GetPlayer()->pvpInfo.IsHostile)
+         GetPlayer()->CastSpell(GetPlayer(), 2479, true);

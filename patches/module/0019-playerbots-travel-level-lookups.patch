@@ -1,0 +1,77 @@
+diff --git a/src/Mgr/Travel/TravelMgr.cpp b/src/Mgr/Travel/TravelMgr.cpp
+index 1369899..dddcec7 100644
+--- a/src/Mgr/Travel/TravelMgr.cpp
++++ b/src/Mgr/Travel/TravelMgr.cpp
+@@ -66,6 +66,15 @@ static Capital const* FindCapitalByBanker(uint16 bankerEntry)
+     return nullptr;
+ }
+ 
++// Every map thread reads these tables, so a missing level must read as empty instead of being inserted
++template <class T>
++static std::vector<T> const& LevelEntries(std::map<uint8, std::vector<T>> const& cache, uint8 level)
++{
++    static std::vector<T> const empty;
++    auto itr = cache.find(level);
++    return itr != cache.end() ? itr->second : empty;
++}
++
+ static int GetCityWeight(uint32 zoneId)
+ {
+     switch (zoneId)
+@@ -4489,16 +4498,15 @@ const std::vector<WorldLocation> TravelMgr::GetTeleportLocations(Player* bot)
+     uint32 level = bot->GetLevel();
+     uint8 isAlliance = bot->GetTeamId() == TEAM_ALLIANCE;
+     if (sPlayerbotAIConfig.EnableNewRpgStrategy)
+-        return isAlliance ? allianceHubsPerLevelCache[level] : hordeHubsPerLevelCache[level];
++        return LevelEntries(isAlliance ? allianceHubsPerLevelCache : hordeHubsPerLevelCache, level);
+ 
+-    return locsPerLevelCache[level];
++    return LevelEntries(locsPerLevelCache, level);
+ }
+ 
+ const std::vector<WorldLocation> TravelMgr::GetTravelHubs(Player* bot)
+ {
+-    std::vector<WorldLocation> locs = bot->GetTeamId() == TEAM_ALLIANCE
+-                                                 ? allianceHubsPerLevelCache[bot->GetLevel()]
+-                                                 : hordeHubsPerLevelCache[bot->GetLevel()];
++    std::vector<WorldLocation> locs = LevelEntries(
++        bot->GetTeamId() == TEAM_ALLIANCE ? allianceHubsPerLevelCache : hordeHubsPerLevelCache, bot->GetLevel());
+     return locs;
+ }
+ 
+@@ -4507,7 +4515,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
+     uint32 level = bot->GetLevel();
+ 
+     std::vector<WorldLocation> fallbackLocations;
+-    for (auto& bLoc : bankerLocsPerLevelCache[level])
++    for (auto& bLoc : LevelEntries(bankerLocsPerLevelCache, level))
+         fallbackLocations.push_back(bLoc.loc);
+ 
+     if (!sPlayerbotAIConfig.EnableWeightTeleToCityBankers)
+@@ -4515,7 +4523,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
+ 
+     TeamId botTeamId = bot->GetTeamId();
+     std::unordered_set<uint32> validBankerCities;
+-    for (auto& loc : bankerLocsPerLevelCache[level])
++    for (auto& loc : LevelEntries(bankerLocsPerLevelCache, level))
+     {
+         Capital const* capital = FindCapitalByBanker(loc.entry);
+         if (!capital)
+diff --git a/src/Mgr/Travel/TravelMgr.h b/src/Mgr/Travel/TravelMgr.h
+index db6c4fa..a14be5c 100644
+--- a/src/Mgr/Travel/TravelMgr.h
++++ b/src/Mgr/Travel/TravelMgr.h
+@@ -881,7 +881,12 @@ public:
+     std::vector<WorldLocation> GetCityLocations(Player* bot);
+     std::vector<uint32> GetFlightNodesInZone(uint32 zoneId, TeamId team, uint32 excludeNode = 0) const;
+     bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
+-    std::vector<WorldLocation> const& GetLocsPerLevelCache(uint8 level) { return locsPerLevelCache[level]; }
++    std::vector<WorldLocation> const& GetLocsPerLevelCache(uint8 level)
++    {
++        static std::vector<WorldLocation> const empty;
++        auto itr = locsPerLevelCache.find(level);
++        return itr != locsPerLevelCache.end() ? itr->second : empty;
++    }
+ 
+     template <class D, class W, class URBG>
+     void weighted_shuffle(D first, D last, W first_weight, W last_weight, URBG&& g)

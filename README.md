@@ -216,6 +216,11 @@ build instead of being silently skipped.
   lookup always came back empty; `FindBaseNonInstanceMap` returns the same results without reading
   that table. Used for `WorldPosition::getMap` and the four direct lookups. `getMap` passed
   `getInstanceId()`, which is the base map's ID 0, so it never reached an instance either.
+- `module/0019-playerbots-travel-level-lookups.patch` — ninth part, `TravelMgr`'s per-level location
+  tables (flight-master hubs, bankers, grind spots). They are built at startup, but the teleport and RPG
+  lookups that bots make on their map threads used `operator[]`, which inserts an empty entry for any level
+  the table does not have. Those lookups now use `find` and return an empty list, which is what the
+  inserted entry held.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

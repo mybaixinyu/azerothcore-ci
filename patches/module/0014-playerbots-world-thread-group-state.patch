@@ -1,0 +1,1445 @@
+diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+index 58f019c..83dd16b 100644
+--- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
++++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
+@@ -12,6 +12,8 @@
+ #include "GroupMgr.h"
+ #include "PlayerbotAI.h"
+ #include "PlayerbotOperations.h"
++#include "PlayerbotThreadContext.h"
++#include "PlayerbotWorldThread.h"
+ #include "PlayerbotWorldThreadProcessor.h"
+ #include "Playerbots.h"
+ #include "PositionValue.h"
+@@ -43,6 +45,21 @@ bool BGJoinAction::Execute(Event /*event*/)
+             if (i != ratedList.end())
+                 isRated = true;
+ 
++            if (isRated && PlayerbotThreadContext::OtherMapsMayRun())
++            {
++                // Gathering the team regroups, resets and teleports members on other maps, which only the world
++                // thread may touch, so the team is gathered and queued there
++                PlayerbotWorldThread::RunForBot(
++                    bot, "JoinRatedArena",
++                    [actionName = getName(), type, queueTypeId](Player* /*bot*/, PlayerbotAI* botAI)
++                    {
++                        Action* action = botAI->GetAiObjectContext()->GetAction(actionName);
++                        if (BGJoinAction* joinAction = dynamic_cast<BGJoinAction*>(action))
++                            joinAction->JoinRatedArena(type, queueTypeId);
++                    });
++                return true;
++            }
++
+             if (isRated && !gatherArenaTeam(type))
+                 return false;
+ 
+@@ -58,6 +75,20 @@ bool BGJoinAction::Execute(Event /*event*/)
+     return JoinQueue(queueType);
+ }
+ 
++// The rated arena part of Execute, run on the world thread
++bool BGJoinAction::JoinRatedArena(ArenaType type, BattlegroundQueueTypeId queueTypeId)
++{
++    if (bot->InBattleground() || bot->InBattlegroundQueue())
++        return false;
++
++    if (!gatherArenaTeam(type))
++        return false;
++
++    botAI->GetAiObjectContext()->GetValue<uint32>("arena type")->Set(true);
++    botAI->GetAiObjectContext()->GetValue<uint32>("bg type")->Set(queueTypeId);
++    return JoinQueue(queueTypeId);
++}
++
+ bool BGJoinAction::gatherArenaTeam(ArenaType type)
+ {
+     ArenaTeam* arenateam = sArenaTeamMgr->GetArenaTeamByCaptain(bot->GetGUID(), type);
+diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.h b/src/Ai/Base/Actions/BattleGroundJoinAction.h
+index 79c8400..5cf567a 100644
+--- a/src/Ai/Base/Actions/BattleGroundJoinAction.h
++++ b/src/Ai/Base/Actions/BattleGroundJoinAction.h
+@@ -28,6 +28,7 @@ public:
+     virtual bool shouldJoinBg(BattlegroundQueueTypeId queueTypeId, BattlegroundBracketId bracketId);
+     bool Execute(Event event) override;
+     virtual bool gatherArenaTeam(ArenaType type);
++    bool JoinRatedArena(ArenaType type, BattlegroundQueueTypeId queueTypeId);
+ 
+ protected:
+     bool JoinQueue(uint32 type);
+diff --git a/src/Ai/Base/Actions/CheckMailAction.cpp b/src/Ai/Base/Actions/CheckMailAction.cpp
+index 672cf53..0ddbb98 100644
+--- a/src/Ai/Base/Actions/CheckMailAction.cpp
++++ b/src/Ai/Base/Actions/CheckMailAction.cpp
+@@ -5,12 +5,35 @@
+  */
+ 
+ #include "CheckMailAction.h"
++#include "AiObjectContext.h"
+ #include "Event.h"
+ #include "GuildTaskMgr.h"
+ #include "PlayerbotAI.h"
+ #include "PlayerbotAIConfig.h"
++#include "PlayerbotThreadContext.h"
++#include "PlayerbotWorldThread.h"
+ 
+ bool CheckMailAction::Execute(Event /*event*/)
++{
++    // Mail from a real player may be sent back to them, and they are told about guild task progress, but they may be
++    // on another map: check the mail on the world thread, where the core handles a client's mail
++    if (PlayerbotThreadContext::OtherMapsMayRun())
++    {
++        PlayerbotWorldThread::RunForBot(
++            bot, "CheckMail",
++            [actionName = getName()](Player* /*bot*/, PlayerbotAI* botAI)
++            {
++                Action* action = botAI->GetAiObjectContext()->GetAction(actionName);
++                if (CheckMailAction* checkMail = dynamic_cast<CheckMailAction*>(action))
++                    checkMail->CheckMail();
++            });
++        return true;
++    }
++
++    return CheckMail();
++}
++
++bool CheckMailAction::CheckMail()
+ {
+     WorldPacket p;
+     bot->GetSession()->HandleQueryNextMailTime(p);
+diff --git a/src/Ai/Base/Actions/CheckMailAction.h b/src/Ai/Base/Actions/CheckMailAction.h
+index f2bb617..6c5be8f 100644
+--- a/src/Ai/Base/Actions/CheckMailAction.h
++++ b/src/Ai/Base/Actions/CheckMailAction.h
+@@ -21,6 +21,7 @@ public:
+ 
+     bool Execute(Event event) override;
+     bool isUseful() override;
++    bool CheckMail();
+ 
+ private:
+     void ProcessMail(Mail* mail, Player* owner, CharacterDatabaseTransaction trans);
+diff --git a/src/Ai/Base/Actions/GuildBankAction.cpp b/src/Ai/Base/Actions/GuildBankAction.cpp
+index e97466a..a8e9fc5 100644
+--- a/src/Ai/Base/Actions/GuildBankAction.cpp
++++ b/src/Ai/Base/Actions/GuildBankAction.cpp
+@@ -8,6 +8,7 @@
+ #include "AiObjectContext.h"
+ #include "GuildMgr.h"
+ #include "PlayerbotAI.h"
++#include "PlayerbotWorldThread.h"
+ 
+ bool GuildBankAction::Execute(Event event)
+ {
+@@ -55,9 +56,6 @@ bool GuildBankAction::Execute(std::string const text, GameObject* bank)
+ 
+ bool GuildBankAction::MoveFromCharToBank(Item* item, GameObject* /*bank*/)
+ {
+-    uint32 playerSlot = item->GetSlot();
+-    uint32 playerBag = item->GetBagSlot();
+-
+     std::ostringstream out;
+ 
+     Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+@@ -70,7 +68,17 @@ bool GuildBankAction::MoveFromCharToBank(Item* item, GameObject* /*bank*/)
+     else
+     {
+         out << chat->FormatItem(item->GetTemplate()) << " put to guild bank";
+-        guild->SwapItemsWithInventory(bot, false, 0, 255, playerBag, playerSlot, 0);
++
++        // The guild bank is guild state, which the core changes on the world thread (CMSG_GUILD_BANK_SWAP_ITEMS)
++        PlayerbotWorldThread::RunForBot(
++            bot, "GuildBankDeposit",
++            [itemGuid = item->GetGUID()](Player* bot, PlayerbotAI* /*botAI*/)
++            {
++                Item* item = bot->GetItemByGuid(itemGuid);
++                Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
++                if (item && guild)
++                    guild->SwapItemsWithInventory(bot, false, 0, 255, item->GetBagSlot(), item->GetSlot(), 0);
++            });
+     }
+ 
+     botAI->TellMaster(out);
+diff --git a/src/Ai/Base/Actions/LootRollAction.cpp b/src/Ai/Base/Actions/LootRollAction.cpp
+index fdfc913..5bf85e4 100644
+--- a/src/Ai/Base/Actions/LootRollAction.cpp
++++ b/src/Ai/Base/Actions/LootRollAction.cpp
+@@ -11,8 +11,42 @@
+ #include "LootAction.h"
+ #include "ObjectMgr.h"
+ #include "PlayerbotAIConfig.h"
++#include "PlayerbotThreadContext.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ 
++// Votes are group state, which the core changes on the world thread (CMSG_LOOT_ROLL). The core counts every call,
++// and the bot may decide again before a queued vote is counted, so there only a vote still missing is counted.
++static void CountRollVote(Player* bot, Group* group, ObjectGuid rollGuid, RollVote vote)
++{
++    if (!PlayerbotThreadContext::OtherMapsMayRun())
++    {
++        group->CountRollVote(bot->GetGUID(), rollGuid, vote);
++        return;
++    }
++
++    PlayerbotWorldThread::RunForBot(
++        bot, "CountRollVote",
++        [groupGuid = group->GetGUID(), rollGuid, vote](Player* bot, PlayerbotAI* /*botAI*/)
++        {
++            Group* group = bot->GetGroup();
++            if (!group || group->GetGUID() != groupGuid)
++                return;
++
++            // The roll CountRollVote finds
++            for (Roll const* roll : group->GetRolls())
++            {
++                if (roll->itemGUID != rollGuid || !roll->isValid())
++                    continue;
++
++                auto const voteItr = roll->playerVote.find(bot->GetGUID());
++                if (voteItr != roll->playerVote.end() && voteItr->second == NOT_EMITED_YET)
++                    group->CountRollVote(bot->GetGUID(), rollGuid, vote);
++                return;
++            }
++        });
++}
++
+ bool LootRollAction::Execute(Event /*event*/)
+ {
+     Group* group = bot->GetGroup();
+@@ -97,10 +131,10 @@ bool LootRollAction::Execute(Event /*event*/)
+         {
+             case MASTER_LOOT:
+             case FREE_FOR_ALL:
+-                group->CountRollVote(bot->GetGUID(), guid, PASS);
++                CountRollVote(bot, group, guid, PASS);
+                 break;
+             default:
+-                group->CountRollVote(bot->GetGUID(), guid, vote);
++                CountRollVote(bot, group, guid, vote);
+                 break;
+         }
+         voted = true;
+@@ -177,7 +211,7 @@ bool MasterLootRollAction::Execute(Event event)
+     if (!group)
+         return false;
+ 
+-    group->CountRollVote(bot->GetGUID(), creatureGuid, CalculateRollVote(proto));
++    CountRollVote(bot, group, creatureGuid, CalculateRollVote(proto));
+ 
+     return true;
+ }
+diff --git a/src/Ai/Base/Actions/RtiAction.cpp b/src/Ai/Base/Actions/RtiAction.cpp
+index 46efb91..2e1cda4 100644
+--- a/src/Ai/Base/Actions/RtiAction.cpp
++++ b/src/Ai/Base/Actions/RtiAction.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "RtiAction.h"
+ #include "Event.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiTargetValue.h"
+ #include "Strategy.h"
+@@ -104,6 +105,6 @@ bool MarkRtiAction::Execute(Event /*event*/)
+ 
+     std::string const rti = AI_VALUE(std::string, "rti");
+     uint8 index = RtiTargetValue::GetRtiIndex(rti);
+-    group->SetTargetIcon(index, bot->GetGUID(), target->GetGUID());
++    PlayerbotWorldThread::SetTargetIcon(bot, group, index, target->GetGUID());
+     return true;
+ }
+diff --git a/src/Ai/Base/Actions/SendMailAction.cpp b/src/Ai/Base/Actions/SendMailAction.cpp
+index 8657a1f..f68e3bc 100644
+--- a/src/Ai/Base/Actions/SendMailAction.cpp
++++ b/src/Ai/Base/Actions/SendMailAction.cpp
+@@ -10,8 +10,31 @@
+ #include "ItemVisitors.h"
+ #include "Mail.h"
+ #include "PlayerbotTextMgr.h"
++#include "PlayerbotThreadContext.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ 
++// Mail to an online receiver is added to that player, who may be on another map, so it is delivered on the world
++// thread, where the core sends a client's mail (CMSG_SEND_MAIL). Delivery does not wait on the bot staying online:
++// the money and items have already left it.
++static void SendMail(MailDraft draft, CharacterDatabaseTransaction trans, Player* receiver, Player* bot)
++{
++    if (!PlayerbotThreadContext::OtherMapsMayRun())
++    {
++        draft.SendMailTo(trans, MailReceiver(receiver), MailSender(bot));
++        CharacterDatabase.CommitTransaction(trans);
++        return;
++    }
++
++    PlayerbotWorldThread::Run(
++        "SendMail",
++        [draft, trans, receiverGuid = receiver->GetGUID(), sender = MailSender(bot)]() mutable
++        {
++            draft.SendMailTo(trans, MailReceiver(receiverGuid.GetCounter()), sender);
++            CharacterDatabase.CommitTransaction(trans);
++        });
++}
++
+ bool SendMailAction::Execute(Event event)
+ {
+     uint32 account = bot->GetSession()->GetAccountId();
+@@ -102,9 +125,7 @@ bool SendMailAction::Execute(Event event)
+         MailDraft draft("Money you asked for", body.str());
+         draft.AddMoney(money);
+         bot->SetMoney(bot->GetMoney() - money);
+-        draft.SendMailTo(trans, MailReceiver(receiver), MailSender(bot));
+-
+-        CharacterDatabase.CommitTransaction(trans);
++        SendMail(draft, trans, receiver, bot);
+ 
+         std::ostringstream out;
+         botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+@@ -170,9 +191,7 @@ bool SendMailAction::Execute(Event event)
+             item->SetOwnerGUID(receiver->GetGUID());
+             item->SaveToDB(trans);
+             draft.AddItem(item);
+-            draft.SendMailTo(trans, MailReceiver(receiver), MailSender(bot));
+-
+-            CharacterDatabase.CommitTransaction(trans);
++            SendMail(draft, trans, receiver, bot);
+ 
+             std::ostringstream out;
+             out << PlayerbotTextMgr::instance().GetBotTextOrDefault(
+diff --git a/src/Ai/Dungeon/FoS/FoSActions.cpp b/src/Ai/Dungeon/FoS/FoSActions.cpp
+index 6d26e42..90c6164 100644
+--- a/src/Ai/Dungeon/FoS/FoSActions.cpp
++++ b/src/Ai/Dungeon/FoS/FoSActions.cpp
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include "FoSActions.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ 
+ bool MoveFromBronjahmAction::Execute(Event /*event*/)
+@@ -40,7 +41,7 @@ bool AttackCorruptedSoulFragmentAction::Execute(Event /*event*/)
+                     ObjectGuid currentSkullGuid = group->GetTargetIcon(7);
+                     if (currentSkullGuid.IsEmpty() || currentSkullGuid != unit->GetGUID())
+                     {
+-                        group->SetTargetIcon(7, bot->GetGUID(), unit->GetGUID());  // 7 = skull
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, 7, unit->GetGUID());  // 7 = skull
+                     }
+                 }
+                 break;
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_BPC.cpp b/src/Ai/Raid/ICC/Action/ICCActions_BPC.cpp
+index 9fe54c2..4bd711b 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_BPC.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_BPC.cpp
+@@ -10,6 +10,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -220,13 +221,13 @@ bool IccBpcMainTankAction::MarkEmpoweredPrince()
+             // guid/unit from before the clear and skips re-marking for a full tick.
+             if (markedUnit && (!markedUnit->IsAlive() || markedUnit != empoweredPrince))
+             {
+-                group->SetTargetIcon(SKULL_RAID_ICON, bot->GetGUID(), ObjectGuid::Empty);
++                PlayerbotWorldThread::SetTargetIcon(bot, group, SKULL_RAID_ICON, ObjectGuid::Empty);
+                 markedUnit = nullptr;
+             }
+ 
+             // Mark alive empowered prince if needed
+             if (!markedUnit)
+-                group->SetTargetIcon(SKULL_RAID_ICON, bot->GetGUID(), empoweredPrince->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, SKULL_RAID_ICON, empoweredPrince->GetGUID());
+         }
+     }
+ 
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp b/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp
+index 551e8f5..eecd98c 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_GSB.cpp
+@@ -11,6 +11,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -753,7 +754,7 @@ bool IccGunshipRocketJumpAction::Execute(Event /*event*/)
+ 
+                     if (nextAdd)
+                     {
+-                        group->SetTargetIcon(STAR_ICON_INDEX, bot->GetGUID(), nextAdd->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, STAR_ICON_INDEX, nextAdd->GetGUID());
+                         lastStarPos = Position(nextAdd->GetPositionX(),
+                                                nextAdd->GetPositionY(),
+                                                nextAdd->GetPositionZ());
+@@ -955,7 +956,7 @@ bool IccGunshipRocketJumpAction::CleanupSkullIcon(uint8 skullIconIndex)
+ 
+     Unit* skullTarget = ObjectAccessor::GetUnit(*bot, currentSkullTarget);
+     if (!skullTarget || !skullTarget->IsAlive())
+-        group->SetTargetIcon(skullIconIndex, bot->GetGUID(), ObjectGuid::Empty);
++        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIconIndex, ObjectGuid::Empty);
+ 
+     return false;
+ }
+@@ -967,7 +968,7 @@ bool IccGunshipRocketJumpAction::UpdateBossSkullIcon(Unit* boss, uint8 skullIcon
+         return false;
+ 
+     if (group->GetTargetIcon(skullIconIndex) != boss->GetGUID())
+-        group->SetTargetIcon(skullIconIndex, bot->GetGUID(), boss->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIconIndex, boss->GetGUID());
+ 
+     return false;
+ }
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_LDW.cpp b/src/Ai/Raid/ICC/Action/ICCActions_LDW.cpp
+index 454bc86..b6c9459 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_LDW.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_LDW.cpp
+@@ -10,6 +10,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -681,7 +682,7 @@ bool IccAddsLadyDeathwhisperAction::UpdateRaidTargetIcon(Unit* target)
+     bool const shouldUpdate = !currentSkullUnit || !currentSkullUnit->IsAlive() || (targetIsAdd && !currentIsAdd);
+ 
+     if (shouldUpdate)
+-        group->SetTargetIcon(SKULL_ICON_INDEX, bot->GetGUID(), target->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, SKULL_ICON_INDEX, target->GetGUID());
+ 
+     return false;
+ }
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_LK.cpp b/src/Ai/Raid/ICC/Action/ICCActions_LK.cpp
+index f67715a..b2d375d 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_LK.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_LK.cpp
+@@ -11,6 +11,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -444,9 +445,9 @@ bool IccLichKingWinterAction::Execute(Event /*event*/)
+             Unit* markTarget = bestShambling ? bestShambling : bestSpirit;
+ 
+             if (markTarget)
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), markTarget->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, markTarget->GetGUID());
+             else if (!group->GetTargetIcon(RtiTargetValue::skullIndex).IsEmpty())
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), ObjectGuid::Empty);
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, ObjectGuid::Empty);
+         }
+     }
+ 
+@@ -1894,16 +1895,16 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
+                 if (nearestRaging)
+                 {
+                     if (!ragingMarked && group->GetTargetIcon(RtiTargetValue::skullIndex) != nearestRaging->GetGUID())
+-                        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), nearestRaging->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, nearestRaging->GetGUID());
+                 }
+                 else if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
+                 {
+-                    group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+                 }
+ 
+                 // Cross marker is no longer used for vile windows — clear if set
+                 if (!group->GetTargetIcon(CROSS_ICON).IsEmpty())
+-                    group->SetTargetIcon(CROSS_ICON, bot->GetGUID(), ObjectGuid::Empty);
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, CROSS_ICON, ObjectGuid::Empty);
+ 
+                 // Per-bot RTI: melee non-tanks always target skull (boss or raging)
+                 if (PlayerbotAI::IsMelee(bot) && !PlayerbotAI::IsTank(bot))
+@@ -1917,7 +1918,7 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
+             else if (boss && boss->HealthAbovePct(71))
+             {
+                 if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
+-                    group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+             }
+             else if (boss)
+             {
+@@ -1951,11 +1952,11 @@ bool IccLichKingAddsAction::Execute(Event /*event*/)
+                     if (nearestSpirit)
+                     {
+                         if (group->GetTargetIcon(RtiTargetValue::skullIndex) != nearestSpirit->GetGUID())
+-                            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), nearestSpirit->GetGUID());
++                            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, nearestSpirit->GetGUID());
+                     }
+                     else if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
+                     {
+-                        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+                     }
+                 }
+             }
+@@ -2417,7 +2418,7 @@ bool IccLichKingAddsAction::HandleSpiritMarkingAndTargeting(Difficulty diff, Uni
+ 
+         Unit* toMark = prioritySpirit ? prioritySpirit : nearestSpirit;
+         if (toMark && (needNewMark || (prioritySpirit && !markOnTarget)))
+-            group->SetTargetIcon(STAR_ICON, bot->GetGUID(), toMark->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, STAR_ICON, toMark->GetGUID());
+     }
+ 
+     // Ranged DPS focus the star target
+@@ -3746,7 +3747,7 @@ bool IccLichKingAddsAction::HandleValkyrMarking(std::vector<Unit*> const& grabbi
+             bool const stale = !marked->HasAura(SPELL_HARVEST_SOUL_VALKYR) ||
+                                std::abs(marked->GetPositionZ() - bot->GetPositionZ()) > 5.0f;
+             if (stale)
+-                group->SetTargetIcon(iconIdx, bot->GetGUID(), ObjectGuid::Empty);
++                PlayerbotWorldThread::SetTargetIcon(bot, group, iconIdx, ObjectGuid::Empty);
+         }
+     }
+ 
+@@ -3754,7 +3755,7 @@ bool IccLichKingAddsAction::HandleValkyrMarking(std::vector<Unit*> const& grabbi
+     for (size_t i = sorted.size(); i < Icons.size(); ++i)
+     {
+         if (!group->GetTargetIcon(Icons[i]).IsEmpty())
+-            group->SetTargetIcon(Icons[i], bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, Icons[i], ObjectGuid::Empty);
+     }
+ 
+     // Assign an icon to each active Val'kyr.
+@@ -3772,7 +3773,7 @@ bool IccLichKingAddsAction::HandleValkyrMarking(std::vector<Unit*> const& grabbi
+ 
+         Unit* marked = botAI->GetUnit(group->GetTargetIcon(iconIdx));
+         if (!marked || marked != sorted[i])
+-            group->SetTargetIcon(iconIdx, bot->GetGUID(), sorted[i]->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, iconIdx, sorted[i]->GetGUID());
+     }
+ 
+     return true;
+@@ -4273,11 +4274,11 @@ bool IccLichKingAddsAction::HandleIceSphereMechanics()
+         }
+ 
+         if (nearestSphere)
+-            group->SetTargetIcon(SPHERE_ICON, bot->GetGUID(), nearestSphere->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, SPHERE_ICON, nearestSphere->GetGUID());
+         else
+         {
+             if (!group->GetTargetIcon(SPHERE_ICON).IsEmpty())
+-                group->SetTargetIcon(SPHERE_ICON, bot->GetGUID(), ObjectGuid::Empty);
++                PlayerbotWorldThread::SetTargetIcon(bot, group, SPHERE_ICON, ObjectGuid::Empty);
+             return false;
+         }
+ 
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_LM.cpp b/src/Ai/Raid/ICC/Action/ICCActions_LM.cpp
+index eb86a60..beded07 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_LM.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_LM.cpp
+@@ -10,6 +10,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -322,7 +323,7 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit*
+ 
+         Unit* marked = botAI->GetUnit(iconGuid);
+         if (marked && !marked->IsAlive())
+-            group->SetTargetIcon(iconIdx, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, iconIdx, ObjectGuid::Empty);
+     }
+ 
+     // Check if the only spike left is a tank spike
+@@ -333,13 +334,13 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit*
+     {
+         // Skull on spike, Cross on boss
+         if (group->GetTargetIcon(RtiTargetValue::skullIndex) != spikes[0]->GetGUID())
+-            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), spikes[0]->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, spikes[0]->GetGUID());
+ 
+         if (group->GetTargetIcon(RtiTargetValue::crossIndex) != boss->GetGUID())
+-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), boss->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::crossIndex, boss->GetGUID());
+ 
+         if (!group->GetTargetIcon(RtiTargetValue::starIndex).IsEmpty())
+-            group->SetTargetIcon(RtiTargetValue::starIndex, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::starIndex, ObjectGuid::Empty);
+ 
+         return true;
+     }
+@@ -348,7 +349,7 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit*
+     for (size_t i = spikes.size(); i < sizeof(Icons); ++i)
+     {
+         if (!group->GetTargetIcon(Icons[i]).IsEmpty())
+-            group->SetTargetIcon(Icons[i], bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, Icons[i], ObjectGuid::Empty);
+     }
+ 
+     // Assign Skull/Cross/Star to each alive spike
+@@ -356,7 +357,7 @@ bool IccSpikeAction::HandleSpikeMarking(std::vector<Unit*> const& spikes, Unit*
+     {
+         uint8 const iconIdx = Icons[i];
+         if (group->GetTargetIcon(iconIdx) != spikes[i]->GetGUID())
+-            group->SetTargetIcon(iconIdx, bot->GetGUID(), spikes[i]->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, iconIdx, spikes[i]->GetGUID());
+     }
+ 
+     return true;
+@@ -372,12 +373,12 @@ bool IccSpikeAction::HandleNoSpikesMarking(Unit* boss)
+     for (uint8 const iconIdx : {uint8(6), uint8(0)})
+     {
+         if (!group->GetTargetIcon(iconIdx).IsEmpty())
+-            group->SetTargetIcon(iconIdx, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, iconIdx, ObjectGuid::Empty);
+     }
+ 
+     // Skull on boss
+     if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
+-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+ 
+     // Per-bot context value -- every bot needs this for its own ChooseTarget.
+     context->GetValue<std::string>("rti")->Set("skull");
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_PP.cpp b/src/Ai/Raid/ICC/Action/ICCActions_PP.cpp
+index 12f09b6..642246c 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_PP.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_PP.cpp
+@@ -11,6 +11,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -617,10 +618,10 @@ bool IccPutricideVolatileOozeAction::MarkOozeWithSkull(Unit* ooze)
+     Unit* markedUnit = botAI->GetUnit(skullGuid);
+ 
+     if (markedUnit && (!markedUnit->IsAlive() || (ooze && markedUnit != ooze)))
+-        group->SetTargetIcon(skullIconId, bot->GetGUID(), ObjectGuid::Empty);
++        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIconId, ObjectGuid::Empty);
+ 
+     if (ooze && ooze->IsAlive() && (!skullGuid || !markedUnit))
+-        group->SetTargetIcon(skullIconId, bot->GetGUID(), ooze->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIconId, ooze->GetGUID());
+ 
+     return false;
+ }
+@@ -1069,7 +1070,7 @@ bool IccPutricideGasCloudAction::HandleGroupAuraSituation(Unit* gasCloud)
+         ObjectGuid currentSkull = group->GetTargetIcon(skullIconId);
+         Unit* markedUnit = botAI->GetUnit(currentSkull);
+         if (!markedUnit || !markedUnit->IsAlive() || markedUnit != gasCloud)
+-            group->SetTargetIcon(skullIconId, bot->GetGUID(), gasCloud->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, skullIconId, gasCloud->GetGUID());
+     }
+ 
+     float currentDist = gasCloud ? bot->GetDistance(gasCloud) : 0.0f;
+@@ -1274,7 +1275,7 @@ bool IccPutricideAvoidMalleableGooAction::HandleTankPositioning(Unit* boss)
+             ObjectGuid skullGuid = group->GetTargetIcon(skullIconId);
+             Unit* markedUnit = botAI->GetUnit(skullGuid);
+             if (!skullGuid || !markedUnit || !markedUnit->IsAlive())
+-                group->SetTargetIcon(skullIconId, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, skullIconId, boss->GetGUID());
+         }
+     }
+ 
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_SG.cpp b/src/Ai/Raid/ICC/Action/ICCActions_SG.cpp
+index 1a1a897..a5b8101 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_SG.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_SG.cpp
+@@ -10,6 +10,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -274,7 +275,7 @@ bool IccSindragosaGroupPositionAction::HandleNonTankPositioning()
+             {
+                 int8 const icon = ICC_BUCKET_MARKERS[i].icon;
+                 if (!group->GetTargetIcon(icon).IsEmpty())
+-                    group->SetTargetIcon(icon, bot->GetGUID(), ObjectGuid::Empty);
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, icon, ObjectGuid::Empty);
+             }
+ 
+             context->GetValue<std::string>("rti")->Set("skull");
+@@ -310,7 +311,7 @@ bool IccSindragosaGroupPositionAction::HandleNonTankPositioning()
+             {
+                 int8 const icon = ICC_BUCKET_MARKERS[i].icon;
+                 if (!iconTomb[i] && !group->GetTargetIcon(icon).IsEmpty())
+-                    group->SetTargetIcon(icon, bot->GetGUID(), ObjectGuid::Empty);
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, icon, ObjectGuid::Empty);
+             }
+ 
+             // Each DPS keeps its air phase group mark while that tomb lives,
+@@ -891,7 +892,7 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
+     {
+         int8 const icon = ICC_BUCKET_MARKERS[i].icon;
+         if (!group->GetTargetIcon(icon).IsEmpty())
+-            group->SetTargetIcon(icon, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, icon, ObjectGuid::Empty);
+     }
+ 
+     constexpr uint8 SKULL_ICON = RtiTargetValue::skullIndex;
+@@ -936,7 +937,7 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
+             {
+                 ObjectGuid const currentIcon = group->GetTargetIcon(SKULL_ICON);
+                 if (!currentIcon.IsEmpty())
+-                    group->SetTargetIcon(SKULL_ICON, bot->GetGUID(), ObjectGuid::Empty);
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, SKULL_ICON, ObjectGuid::Empty);
+             }
+         }
+         return false;
+@@ -976,7 +977,7 @@ bool IccSindragosaMysticBuffetAction::Execute(Event /*event*/)
+ 
+         ObjectGuid const currentIcon = group->GetTargetIcon(SKULL_ICON);
+         if (!currentIcon.IsEmpty())
+-            group->SetTargetIcon(SKULL_ICON, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, SKULL_ICON, ObjectGuid::Empty);
+         if (tombs.size() == 1)
+             tomb->RemoveAllAuras();
+         bot->AttackStop();
+@@ -1570,14 +1571,14 @@ bool IccSindragosaFrostBombAction::HandleRtiMarking(Group* group, int groupIndex
+         // All tombs at/below threshold — clear icon and stand idle
+         ObjectGuid const currentIcon = group->GetTargetIcon(iconIndex);
+         if (!currentIcon.IsEmpty())
+-            group->SetTargetIcon(iconIndex, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, iconIndex, ObjectGuid::Empty);
+ 
+         bot->AttackStop();
+         return true;
+     }
+ 
+     if (!currentIconUnit || !currentIconUnit->IsAlive() || currentIconUnit != tombToMark)
+-        group->SetTargetIcon(iconIndex, bot->GetGUID(), tombToMark->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, iconIndex, tombToMark->GetGUID());
+ 
+     // Let combat actions fire so this bot DPSes the marked tomb
+     return false;
+diff --git a/src/Ai/Raid/ICC/Action/ICCActions_VT.cpp b/src/Ai/Raid/ICC/Action/ICCActions_VT.cpp
+index 36de887..5a440bb 100644
+--- a/src/Ai/Raid/ICC/Action/ICCActions_VT.cpp
++++ b/src/Ai/Raid/ICC/Action/ICCActions_VT.cpp
+@@ -10,6 +10,7 @@
+ #include "Multiplier.h"
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiValue.h"
+ #include "Vehicle.h"
+@@ -553,18 +554,18 @@ bool IccValithriaGroupAction::HandleMarkingLogic(bool inGroup1, bool inGroup2, b
+     if (!bestTarget)
+     {
+         if (currentIconUnit && !group->GetTargetIcon(iconIndex).IsEmpty())
+-            group->SetTargetIcon(iconIndex, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, iconIndex, ObjectGuid::Empty);
+         return false;
+     }
+ 
+-    group->SetTargetIcon(iconIndex, bot->GetGUID(), bestTarget->GetGUID());
++    PlayerbotWorldThread::SetTargetIcon(bot, group, iconIndex, bestTarget->GetGUID());
+ 
+     if (singleMarkMode)
+     {
+         uint8 const crossIcon = CROSS_ICON;
+         Unit* currentCrossUnit = botAI->GetUnit(group->GetTargetIcon(crossIcon));
+         if (currentCrossUnit && !group->GetTargetIcon(crossIcon).IsEmpty())
+-            group->SetTargetIcon(crossIcon, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, crossIcon, ObjectGuid::Empty);
+     }
+ 
+     tryDispatchRti(bestTarget->GetGUID());
+@@ -692,11 +693,11 @@ bool IccValithriaGroupAction::Handle10ManGroupLogic()
+     if (!bestTarget)
+     {
+         if (currentIconUnit && !group->GetTargetIcon(DEFAULT_ICON).IsEmpty())
+-            group->SetTargetIcon(DEFAULT_ICON, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, DEFAULT_ICON, ObjectGuid::Empty);
+         return false;
+     }
+ 
+-    group->SetTargetIcon(DEFAULT_ICON, bot->GetGUID(), bestTarget->GetGUID());
++    PlayerbotWorldThread::SetTargetIcon(bot, group, DEFAULT_ICON, bestTarget->GetGUID());
+ 
+     tryDispatchRti(bestTarget->GetGUID());
+ 
+diff --git a/src/Ai/Raid/ICC/ICCShared.cpp b/src/Ai/Raid/ICC/ICCShared.cpp
+index 98a622b..106f865 100644
+--- a/src/Ai/Raid/ICC/ICCShared.cpp
++++ b/src/Ai/Raid/ICC/ICCShared.cpp
+@@ -8,6 +8,7 @@
+ #include "ICCActions.h"
+ #include "ICCScripts.h"
+ #include "ICCTriggers.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "ThreatManager.h"
+ #include "Timer.h"
+@@ -146,7 +147,7 @@ void IccEnsureIconOn(Player* bot, PlayerbotAI* botAI, int8 icon, Unit* target)
+ 
+     Unit* current = botAI->GetUnit(group->GetTargetIcon(icon));
+     if (!current || !current->IsAlive() || current != target)
+-        group->SetTargetIcon(icon, bot->GetGUID(), target->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, icon, target->GetGUID());
+ }
+ 
+ void IccApplyHeroicBuffToMember(Player* member, bool applyPainSupp, bool applyNoThreat)
+diff --git a/src/Ai/Raid/MC/MCActions.cpp b/src/Ai/Raid/MC/MCActions.cpp
+index 3707c59..bbf262f 100644
+--- a/src/Ai/Raid/MC/MCActions.cpp
++++ b/src/Ai/Raid/MC/MCActions.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "MCActions.h"
+ #include "MCHelpers.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiTargetValue.h"
+ #include <algorithm>
+@@ -138,7 +139,7 @@ bool McGolemaggMarkBossAction::Execute(Event /*event*/)
+             ObjectGuid currentSkullGuid = group->GetTargetIcon(RtiTargetValue::skullIndex);
+             if (currentSkullGuid.IsEmpty() || currentSkullGuid != boss->GetGUID())
+             {
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+                 return true;
+             }
+         }
+@@ -338,6 +339,6 @@ bool McCoreHoundMarkAction::Execute(Event /*event*/)
+     if (!target)
+         return false;
+ 
+-    bot->GetGroup()->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), target->GetGUID());
++    PlayerbotWorldThread::SetTargetIcon(bot, bot->GetGroup(), RtiTargetValue::skullIndex, target->GetGUID());
+     return true;
+ }
+diff --git a/src/Ai/Raid/RS/Action/RSActions_BAL.cpp b/src/Ai/Raid/RS/Action/RSActions_BAL.cpp
+index df3c6fe..282359e 100644
+--- a/src/Ai/Raid/RS/Action/RSActions_BAL.cpp
++++ b/src/Ai/Raid/RS/Action/RSActions_BAL.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "NearestNpcsValue.h"
+ #include "ObjectAccessor.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RSActions.h"
+ #include <algorithm>
+@@ -521,7 +522,7 @@ bool RsBaltharusTankPositionAction::Execute(Event )
+         if (Group* group = bot->GetGroup())
+         {
+             if (group->GetTargetIcon(RtiTargetValue::skullIndex) != boss->GetGUID())
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+         }
+ 
+         if (boss->GetVictim() != bot)
+diff --git a/src/Ai/Raid/RS/Action/RSActions_HAL.cpp b/src/Ai/Raid/RS/Action/RSActions_HAL.cpp
+index 5a0b471..d2cf34b 100644
+--- a/src/Ai/Raid/RS/Action/RSActions_HAL.cpp
++++ b/src/Ai/Raid/RS/Action/RSActions_HAL.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "ObjectAccessor.h"
+ #include "Pet.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RSActions.h"
+ #include "RSScripts.h"
+@@ -84,16 +85,16 @@ bool RsHalionTankPositionAction::Execute(Event )
+         }
+ 
+         if (skullTarget && group->GetTargetIcon(RtiTargetValue::skullIndex) != skullTarget->GetGUID())
+-            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), skullTarget->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, skullTarget->GetGUID());
+ 
+         if (!adds.empty())
+         {
+             if (group->GetTargetIcon(RtiTargetValue::starIndex) != boss->GetGUID())
+-                group->SetTargetIcon(RtiTargetValue::starIndex, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::starIndex, boss->GetGUID());
+         }
+         else if (!group->GetTargetIcon(RtiTargetValue::starIndex).IsEmpty())
+         {
+-            group->SetTargetIcon(RtiTargetValue::starIndex, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::starIndex, ObjectGuid::Empty);
+         }
+     }
+ 
+@@ -486,7 +487,7 @@ bool RsHalionP2TankPositionAction::Execute(Event )
+     if (Group* group = bot->GetGroup())
+     {
+         if (group->GetTargetIcon(RtiTargetValue::crossIndex) != boss->GetGUID())
+-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), boss->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::crossIndex, boss->GetGUID());
+     }
+ 
+     if (botAI->HasCheat(BotCheatMask::raid))
+diff --git a/src/Ai/Raid/RS/RSShared.h b/src/Ai/Raid/RS/RSShared.h
+index 370b14a..dea3b5e 100644
+--- a/src/Ai/Raid/RS/RSShared.h
++++ b/src/Ai/Raid/RS/RSShared.h
+@@ -10,6 +10,7 @@
+ #include "Group.h"
+ #include "MotionMaster.h"
+ #include "PlayerbotAI.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiTargetValue.h"
+ #include "ThreatManager.h"
+@@ -102,7 +103,7 @@ inline void RsUpdateSkullMarker(Player* bot, Unit* priorityAdd)
+         return;
+ 
+     if (group->GetTargetIcon(RtiTargetValue::skullIndex) != priorityAdd->GetGUID())
+-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), priorityAdd->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, priorityAdd->GetGUID());
+ }
+ 
+ #endif
+diff --git a/src/Ai/Raid/Uld/UldActions.cpp b/src/Ai/Raid/Uld/UldActions.cpp
+index 90f2be3..9be347c 100644
+--- a/src/Ai/Raid/Uld/UldActions.cpp
++++ b/src/Ai/Raid/Uld/UldActions.cpp
+@@ -15,6 +15,7 @@
+ #include "ObjectGuid.h"
+ #include "PlayerbotAI.h"
+ #include "PlayerbotAIConfig.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "Position.h"
+ #include "RtiTargetValue.h"
+@@ -536,7 +537,7 @@ bool RazorscaleAvoidSentinelAction::Execute(Event /*event*/)
+ 
+                     // If there's no skull set yet, or the skull is on a different target, set the sentinel
+                     if (!currentSkullTarget || (lowestHealthSentinel->GetGUID() != currentSkullTarget))
+-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), lowestHealthSentinel->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, lowestHealthSentinel->GetGUID());
+                 }
+                 break;  // Stop after finding the first valid bot tank
+             }
+@@ -552,7 +553,7 @@ bool RazorscaleAvoidSentinelAction::Execute(Event /*event*/)
+ 
+             // If there's no skull set yet, or the skull is on a different target, set the sentinel
+             if (!currentSkullTarget || (lowestHealthSentinel->GetGUID() != currentSkullTarget))
+-                group->SetTargetIcon(skullIndex, bot->GetGUID(), lowestHealthSentinel->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, lowestHealthSentinel->GetGUID());
+         }
+     }
+ 
+@@ -744,7 +745,7 @@ bool RazorscaleIgnoreBossAction::Execute(Event /*event*/)
+         {
+             if (PlayerbotAI::IsAssistTankOfIndex(bot, i) && GET_PLAYERBOT_AI(bot))  // Bot is a valid tank
+             {
+-                group->SetTargetIcon(moonIndex, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, boss->GetGUID());
+                 SetNextMovementDelay(1000);
+                 break;  // Assign the moon marker and stop
+             }
+@@ -752,7 +753,7 @@ bool RazorscaleIgnoreBossAction::Execute(Event /*event*/)
+     }
+     else if (mainTankUnit == bot)  // If this bot is the main tank
+     {
+-        group->SetTargetIcon(moonIndex, bot->GetGUID(), boss->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, boss->GetGUID());
+         SetNextMovementDelay(1000);
+     }
+ 
+@@ -870,7 +871,7 @@ bool RazorscaleGroundedAction::Execute(Event /*event*/)
+                 // If the moon marker is set to the boss, reset it
+                 if (currentMoonTarget == boss->GetGUID())
+                 {
+-                    group->SetTargetIcon(moonIndex, bot->GetGUID(), ObjectGuid::Empty);
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, ObjectGuid::Empty);
+                     SetNextMovementDelay(1000);
+                     return true;
+                 }
+@@ -885,7 +886,7 @@ bool RazorscaleGroundedAction::Execute(Event /*event*/)
+         // If the moon marker is set to the boss, reset it
+         if (currentMoonTarget == boss->GetGUID())
+         {
+-            group->SetTargetIcon(moonIndex, bot->GetGUID(), ObjectGuid::Empty);
++            PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, ObjectGuid::Empty);
+             SetNextMovementDelay(1000);
+             return true;
+         }
+@@ -1239,12 +1240,12 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
+                 Group* group = bot->GetGroup();
+                 if (group)
+                 {
+-                    group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, targetToMark->GetGUID());
+                     if (targetToCcMark)
+-                        group->SetTargetIcon(moonIndex, bot->GetGUID(), targetToCcMark->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, targetToCcMark->GetGUID());
+ 
+                     if (additionalTargetToMark)
+-                        group->SetTargetIcon(crossIndex, bot->GetGUID(), additionalTargetToMark->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, crossIndex, additionalTargetToMark->GetGUID());
+ 
+                     return true;
+                 }
+@@ -1257,12 +1258,12 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
+         Group* group = bot->GetGroup();
+         if (group)
+         {
+-            group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, targetToMark->GetGUID());
+             if (targetToCcMark)
+-                group->SetTargetIcon(moonIndex, bot->GetGUID(), targetToCcMark->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, targetToCcMark->GetGUID());
+ 
+             if (additionalTargetToMark)
+-                group->SetTargetIcon(crossIndex, bot->GetGUID(), additionalTargetToMark->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, crossIndex, additionalTargetToMark->GetGUID());
+ 
+             return true;
+         }
+@@ -1277,12 +1278,12 @@ bool KologarnMarkDpsTargetAction::Execute(Event /*event*/)
+                 Group* group = bot->GetGroup();
+                 if (group)
+                 {
+-                    group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
++                    PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, targetToMark->GetGUID());
+                     if (targetToCcMark)
+-                        group->SetTargetIcon(moonIndex, bot->GetGUID(), targetToCcMark->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, moonIndex, targetToCcMark->GetGUID());
+ 
+                     if (additionalTargetToMark)
+-                        group->SetTargetIcon(crossIndex, bot->GetGUID(), additionalTargetToMark->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, crossIndex, additionalTargetToMark->GetGUID());
+ 
+                     return true;
+                 }
+@@ -1623,8 +1624,8 @@ bool FreyaMarkDpsTargetAction::Execute(Event /*event*/)
+ 
+                     if (!currentSkullTarget || (targetToMark->GetGUID() != currentSkullTarget))
+                     {
+-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
+-                        group->SetTargetIcon(squareIndex, bot->GetGUID(), boss->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, targetToMark->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, squareIndex, boss->GetGUID());
+                         return true;
+                     }
+                 }
+@@ -1641,8 +1642,8 @@ bool FreyaMarkDpsTargetAction::Execute(Event /*event*/)
+ 
+             if (!currentSkullTarget || (targetToMark->GetGUID() != currentSkullTarget))
+             {
+-                group->SetTargetIcon(skullIndex, bot->GetGUID(), targetToMark->GetGUID());
+-                group->SetTargetIcon(squareIndex, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, targetToMark->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, squareIndex, boss->GetGUID());
+                 botAI->GetAiObjectContext()->GetValue<std::string>("rti")->Set("square");
+                 return true;
+             }
+@@ -1723,13 +1724,13 @@ bool ThorimMarkDpsTargetAction::Execute(Event /*event*/)
+     Unit* boss = AI_VALUE2(Unit*, "find target", "thorim");
+     if (!currentMoonUnit && boss && boss->IsAlive() && boss->GetPositionZ() > ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD)
+     {
+-        group->SetTargetIcon(RtiTargetValue::moonIndex, bot->GetGUID(), boss->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::moonIndex, boss->GetGUID());
+     }
+ 
+     if (currentMoonUnit && boss && currentMoonUnit->GetEntry() == boss->GetEntry() &&
+         boss->GetPositionZ() < ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD)
+     {
+-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+         return true;
+     }
+ 
+@@ -1792,13 +1793,13 @@ bool ThorimMarkDpsTargetAction::Execute(Event /*event*/)
+ 
+     if (PlayerbotAI::IsMainTank(bot))
+     {
+-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), targetToMark->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, targetToMark->GetGUID());
+         return true;
+     }
+ 
+     if (PlayerbotAI::IsAssistTankOfIndex(bot, 0))
+     {
+-        group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), targetToMark->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::crossIndex, targetToMark->GetGUID());
+         return true;
+     }
+ 
+@@ -2306,16 +2307,16 @@ bool MimironAerialCommandUnitAction::Execute(Event /*event*/)
+             return false;
+ 
+         if (bombBot)
+-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), bombBot->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::crossIndex, bombBot->GetGUID());
+         else if (boss)
+-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), boss->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::crossIndex, boss->GetGUID());
+ 
+         if (assaultBot)
+         {
+             ObjectGuid skullTarget = group->GetTargetIcon(RtiTargetValue::skullIndex);
+             Unit* skullUnit = botAI->GetUnit(skullTarget);
+             if (!skullTarget || !skullUnit || !skullUnit->IsAlive())
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), assaultBot->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, assaultBot->GetGUID());
+         }
+ 
+         return true;
+@@ -2434,7 +2435,7 @@ bool MimironPhase4MarkDpsAction::Execute(Event /*event*/)
+         if (aerialCommandUnit && aerialCommandUnit->GetHealth() > highestHealth)
+             highestHealthUnit = aerialCommandUnit;
+ 
+-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), highestHealthUnit->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, highestHealthUnit->GetGUID());
+         if (highestHealthUnit == leviathanMkII)
+         {
+             if (AI_VALUE(std::string, "rti") == "skull")
+@@ -2442,7 +2443,7 @@ bool MimironPhase4MarkDpsAction::Execute(Event /*event*/)
+         }
+         else
+         {
+-            group->SetTargetIcon(RtiTargetValue::crossIndex, bot->GetGUID(), leviathanMkII->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::crossIndex, leviathanMkII->GetGUID());
+             if (AI_VALUE(std::string, "rti") != "cross")
+                 botAI->GetAiObjectContext()->GetValue<std::string>("rti")->Set("cross");
+         }
+@@ -2589,7 +2590,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
+         Creature* yogg_saron = bot->FindNearestCreature(NPC_YOGG_SARON, 200.0f, true);
+         if (!currentMoonTarget || currentMoonTarget != yogg_saron->GetGUID())
+         {
+-            group->SetTargetIcon(RtiTargetValue::moonIndex, bot->GetGUID(), yogg_saron->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::moonIndex, yogg_saron->GetGUID());
+             return true;
+         }
+ 
+@@ -2612,7 +2613,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
+                 return false;
+         }
+ 
+-        group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), nextPossibleTarget->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, nextPossibleTarget->GetGUID());
+     }
+     else if (yoggSaronTrigger.IsPhase3())
+     {
+@@ -2652,7 +2653,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
+             if (botAI->HasCheat(BotCheatMask::raid))
+                 lowestHealthUnit->Kill(bot, lowestHealthUnit);
+             else
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), lowestHealthUnit->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, lowestHealthUnit->GetGUID());
+ 
+             return true;
+         }
+@@ -2667,7 +2668,7 @@ bool YoggSaronMarkTargetAction::Execute(Event /*event*/)
+             Unit* yoggsaron = AI_VALUE2(Unit*, "find target", "yogg-saron");
+             if (yoggsaron && yoggsaron->IsAlive())
+             {
+-                group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), yoggsaron->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, yoggsaron->GetGUID());
+                 return true;
+             }
+         }
+@@ -2885,7 +2886,7 @@ bool YoggSaronIllusionRoomAction::SetIllusionRtiTarget(YoggSaronTrigger yoggSaro
+             return false;
+ 
+         uint8 rtiIndex = RtiTargetValue::GetRtiIndex(AI_VALUE(std::string, "rti"));
+-        group->SetTargetIcon(rtiIndex, bot->GetGUID(), nextRtiTarget->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, rtiIndex, nextRtiTarget->GetGUID());
+     }
+ 
+     return true;
+@@ -2906,7 +2907,7 @@ bool YoggSaronIllusionRoomAction::SetBrainRtiTarget(YoggSaronTrigger yoggSaronTr
+     if (!brain)
+         return false;
+ 
+-    group->SetTargetIcon(RtiTargetValue::squareIndex, bot->GetGUID(), brain->GetGUID());
++    PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::squareIndex, brain->GetGUID());
+ 
+     Position entrancePosition = yoggSaronTrigger.GetIllusionRoomEntrancePosition();
+ 
+diff --git a/src/Ai/Raid/Uld/UldTriggers.cpp b/src/Ai/Raid/Uld/UldTriggers.cpp
+index 9980c15..3352898 100644
+--- a/src/Ai/Raid/Uld/UldTriggers.cpp
++++ b/src/Ai/Raid/Uld/UldTriggers.cpp
+@@ -10,6 +10,7 @@
+ #include "MovementActions.h"
+ #include "Object.h"
+ #include "PlayerbotAI.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RtiTargetValue.h"
+ #include "ScriptedCreature.h"
+@@ -822,7 +823,7 @@ bool ThorimMarkDpsTargetTrigger::IsActive()
+ 
+         if (boss->GetPositionZ() < ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD && (!currentSkullUnit || !currentSkullUnit->IsAlive()))
+         {
+-            group->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), boss->GetGUID());
++            PlayerbotWorldThread::SetTargetIcon(bot, group, RtiTargetValue::skullIndex, boss->GetGUID());
+             return true;
+         }
+ 
+diff --git a/src/Ai/Raid/Uld/Util/UldBossHelper.cpp b/src/Ai/Raid/Uld/Util/UldBossHelper.cpp
+index 2f3d2d4..6a7bb68 100644
+--- a/src/Ai/Raid/Uld/Util/UldBossHelper.cpp
++++ b/src/Ai/Raid/Uld/Util/UldBossHelper.cpp
+@@ -10,6 +10,7 @@
+ #include "ObjectAccessor.h"
+ #include "Player.h"
+ #include "PlayerbotAI.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "ScriptedCreature.h"
+ #include "World.h"
+@@ -243,16 +244,26 @@ void RazorscaleBossHelper::AssignRolesBasedOnHealth()
+     if (!newMainTank) // Safety check
+         return;
+ 
+-    // Unflag everyone from main tank
+-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+-    {
+-        Player* member = ref->GetSource();
+-        if (member && PlayerbotAI::IsMainTank(member))
+-            group->SetGroupMemberFlag(member->GetGUID(), false, MEMBER_FLAG_MAINTANK);
+-    }
++    // Member flags are group state, which the core changes on the world thread (MSG_PARTY_ASSIGNMENT)
++    PlayerbotWorldThread::RunForBot(
++        bot, "AssignMainTank",
++        [groupGuid = group->GetGUID(), newMainTankGuid = newMainTank->GetGUID()](Player* bot, PlayerbotAI* /*botAI*/)
++        {
++            Group* group = bot->GetGroup();
++            if (!group || group->GetGUID() != groupGuid)
++                return;
++
++            // Unflag everyone from main tank
++            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
++            {
++                Player* member = ref->GetSource();
++                if (member && PlayerbotAI::IsMainTank(member))
++                    group->SetGroupMemberFlag(member->GetGUID(), false, MEMBER_FLAG_MAINTANK);
++            }
+ 
+-    // Assign the single main tank
+-    group->SetGroupMemberFlag(newMainTank->GetGUID(), true, MEMBER_FLAG_MAINTANK);
++            // Assign the single main tank
++            group->SetGroupMemberFlag(newMainTankGuid, true, MEMBER_FLAG_MAINTANK);
++        });
+ 
+     // Yell a message regardless of whether the new main tank is a bot or a real player
+     const std::string playerName = newMainTank->GetName();
+diff --git a/src/Ai/Raid/VoA/VoAActions.cpp b/src/Ai/Raid/VoA/VoAActions.cpp
+index 29af068..fe50423 100644
+--- a/src/Ai/Raid/VoA/VoAActions.cpp
++++ b/src/Ai/Raid/VoA/VoAActions.cpp
+@@ -10,6 +10,7 @@
+ #include "Group.h"
+ #include "ObjectGuid.h"
+ #include "Player.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "Unit.h"
+ #include "VoATriggers.h"
+@@ -44,7 +45,7 @@ bool EmalonMarkBossAction::Execute(Event /*event*/)
+                     // If there's no skull set yet, or the skull is on a different target, set boss
+                     if (!currentSkullTarget || (boss->GetGUID() != currentSkullTarget))
+                     {
+-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), boss->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, boss->GetGUID());
+                         return true;
+                     }
+                 }
+@@ -63,7 +64,7 @@ bool EmalonMarkBossAction::Execute(Event /*event*/)
+             // If there's no skull set yet, or the skull is on a different target, set the Eonar's Gift
+             if (!currentSkullTarget || (boss->GetGUID() != currentSkullTarget))
+             {
+-                group->SetTargetIcon(skullIndex, bot->GetGUID(), boss->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, boss->GetGUID());
+                 return true;
+             }
+         }
+@@ -145,7 +146,7 @@ bool EmalonOverchargeAction::Execute(Event /*event*/)
+                     // If there's no skull set yet, or the skull is on a different target, set Tempest Minion
+                     if (!currentSkullTarget || (minion->GetGUID() != currentSkullTarget))
+                     {
+-                        group->SetTargetIcon(skullIndex, bot->GetGUID(), minion->GetGUID());
++                        PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, minion->GetGUID());
+                         return true;
+                     }
+                 }
+@@ -164,7 +165,7 @@ bool EmalonOverchargeAction::Execute(Event /*event*/)
+             // If there's no skull set yet, or the skull is on a different target, set the Eonar's Gift
+             if (!currentSkullTarget || (minion->GetGUID() != currentSkullTarget))
+             {
+-                group->SetTargetIcon(skullIndex, bot->GetGUID(), minion->GetGUID());
++                PlayerbotWorldThread::SetTargetIcon(bot, group, skullIndex, minion->GetGUID());
+                 return true;
+             }
+         }
+diff --git a/src/Script/WorldThr/PlayerbotWorldThread.cpp b/src/Script/WorldThr/PlayerbotWorldThread.cpp
+new file mode 100644
+index 0000000..37885ee
+--- /dev/null
++++ b/src/Script/WorldThr/PlayerbotWorldThread.cpp
+@@ -0,0 +1,90 @@
++/*
++ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
++ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
++ * or (at your option) any later version.
++ */
++
++#include "PlayerbotWorldThread.h"
++#include "Group.h"
++#include "Log.h"
++#include "PlayerbotOperations.h"
++#include "PlayerbotThreadContext.h"
++#include "PlayerbotWorldThreadProcessor.h"
++
++namespace
++{
++    class WorldThreadTask : public PlayerbotOperation
++    {
++    public:
++        WorldThreadTask(std::string name, std::function<void()> task) : m_name(std::move(name)), m_task(std::move(task))
++        {
++        }
++
++        bool Execute() override
++        {
++            m_task();
++            return true;
++        }
++
++        std::string GetName() const override { return m_name; }
++
++    private:
++        std::string m_name;
++        std::function<void()> m_task;
++    };
++}
++
++void PlayerbotWorldThread::RunForBot(Player* bot, std::string name, std::function<void(Player*, PlayerbotAI*)> task)
++{
++    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
++    if (!PlayerbotThreadContext::OtherMapsMayRun())
++    {
++        task(bot, botAI);
++        return;
++    }
++
++    if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(
++            std::make_unique<BotWorldThreadTask>(bot->GetGUID(), name, task)))
++    {
++        LOG_ERROR("playerbots", "{} for bot {} ran on its map thread instead", name, bot->GetName());
++        task(bot, botAI);
++    }
++}
++
++void PlayerbotWorldThread::Run(std::string name, std::function<void()> task)
++{
++    if (!PlayerbotThreadContext::OtherMapsMayRun())
++    {
++        task();
++        return;
++    }
++
++    if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<WorldThreadTask>(name, task)))
++    {
++        LOG_ERROR("playerbots", "{} ran on a map thread instead", name);
++        task();
++    }
++}
++
++void PlayerbotWorldThread::SetTargetIcon(Player* bot, Group* group, uint8 id, ObjectGuid targetGuid)
++{
++    if (!PlayerbotThreadContext::OtherMapsMayRun())
++    {
++        group->SetTargetIcon(id, bot->GetGUID(), targetGuid);
++        return;
++    }
++
++    // The core sets raid target icons on the world thread (MSG_RAID_TARGET_UPDATE)
++    RunForBot(bot, "SetTargetIcon",
++              [groupGuid = group->GetGUID(), id, targetGuid](Player* bot, PlayerbotAI* /*botAI*/)
++              {
++                  for (Group* current : {bot->GetGroup(), bot->GetOriginalGroup()})
++                  {
++                      if (current && current->GetGUID() == groupGuid)
++                      {
++                          current->SetTargetIcon(id, bot->GetGUID(), targetGuid);
++                          return;
++                      }
++                  }
++              });
++}
+diff --git a/src/Script/WorldThr/PlayerbotWorldThread.h b/src/Script/WorldThr/PlayerbotWorldThread.h
+new file mode 100644
+index 0000000..9fd2962
+--- /dev/null
++++ b/src/Script/WorldThr/PlayerbotWorldThread.h
+@@ -0,0 +1,33 @@
++/*
++ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
++ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
++ * or (at your option) any later version.
++ */
++
++#ifndef PLAYERBOTS_PLAYERBOTWORLDTHREAD_H
++#define PLAYERBOTS_PLAYERBOTWORLDTHREAD_H
++
++#include "ObjectGuid.h"
++#include <functional>
++#include <string>
++
++class Group;
++class Player;
++class PlayerbotAI;
++
++// Changes the bot AI makes to state the core only changes on the world thread (groups, guilds, mail, the players
++// of other maps). They run right away when no other map can be updating, as they always did, and otherwise on the
++// world thread, up to about 50 ms later.
++namespace PlayerbotWorldThread
++{
++    // Dropped if the bot has logged out by the time the world thread gets to it
++    void RunForBot(Player* bot, std::string name, std::function<void(Player*, PlayerbotAI*)> task);
++
++    // Always runs, for work that must not be lost when the bot logs out, such as mail holding its items
++    void Run(std::string name, std::function<void()> task);
++
++    // Group::SetTargetIcon by the bot, applied only if the bot is still in that group
++    void SetTargetIcon(Player* bot, Group* group, uint8 id, ObjectGuid targetGuid);
++}
++
++#endif
+diff --git a/src/Util/EncounterHelpers.cpp b/src/Util/EncounterHelpers.cpp
+index 964d3ad..2b54ac1 100644
+--- a/src/Util/EncounterHelpers.cpp
++++ b/src/Util/EncounterHelpers.cpp
+@@ -17,6 +17,7 @@
+ #include "InstanceScript.h"
+ #include "MageActions.h"
+ #include "PaladinActions.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "RogueActions.h"
+ #include "RtiTargetValue.h"
+@@ -162,7 +163,7 @@ bool MarkTargetWithIcon(Player* bot, Unit* target, uint8 iconId)
+     ObjectGuid currentGuid = group->GetTargetIcon(iconId);
+     if (currentGuid != target->GetGUID())
+     {
+-        group->SetTargetIcon(iconId, bot->GetGUID(), target->GetGUID());
++        PlayerbotWorldThread::SetTargetIcon(bot, group, iconId, target->GetGUID());
+         return true;
+     }
+ 
+@@ -220,7 +221,7 @@ bool ClearTargetIcon(Player* bot, uint8 iconId)
+     ObjectGuid currentGuid = group->GetTargetIcon(iconId);
+     if (currentGuid != ObjectGuid::Empty)
+     {
+-        group->SetTargetIcon(iconId, bot->GetGUID(), ObjectGuid::Empty);
++        PlayerbotWorldThread::SetTargetIcon(bot, group, iconId, ObjectGuid::Empty);
+         return true;
+     }
+ 

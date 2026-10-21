@@ -175,6 +175,24 @@ build instead of being silently skipped.
   the 189 places that use them are unchanged. Two instances of the same raid now take
   turns; nothing else ever waits. ICC, SSC, Naxxramas and the Ruby Sanctum instance state
   already had locks and are untouched.
+- `module/0014-playerbots-world-thread-group-state.patch` — sixth part, the group, guild and mail
+  changes the AI made directly on its map thread rather than through a packet. Raid target icons (96 calls in the
+  raid and dungeon strategies), the Razorscale main-tank flags, loot roll votes, guild bank deposits, gathering a
+  rated arena team (which regroups, resets and teleports members on other maps) and the mail a bot sends or returns
+  to a player go through `PlayerbotWorldThread`, which makes the change right away when no other map can be
+  updating, so one map thread behaves as before, and otherwise on the world thread, where the core makes it for a
+  client, about 50 ms later. A queued change is applied only if the bot is still in the same group; a queued vote
+  is counted only if the bot has not voted on that roll yet, since the bot may decide again before it is counted
+  and the core counts every call. Mail is delivered even if the bot logs out first, because the money or items have
+  already left it. Channel and guild chat only read the member lists, and leaving a group already queues
+  `CMSG_GROUP_DISBAND`, so they are unchanged.
+- `module/0015-playerbots-randomize-world-state.patch` — seventh part, the two steps of bot randomization
+  that change state shared by every map: unbinding the bot's instances and putting it in a guild (which also fills
+  the bot guild cache). Randomizing is reached from the random-bot update on the world thread, from the bot's own
+  AI, from the level-up hook and from GM commands; when it runs on a map thread while other maps may be updating,
+  those two steps go to the world thread, a moment after the rest. The rest of randomization, refreshing, reviving
+  and the random teleports only touch the bot itself, or queue packets and take locks already. Arena teams were
+  already assigned on the world thread.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

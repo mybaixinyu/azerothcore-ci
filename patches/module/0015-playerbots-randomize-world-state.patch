@@ -1,0 +1,45 @@
+diff --git a/src/Bot/Factory/PlayerbotFactory.cpp b/src/Bot/Factory/PlayerbotFactory.cpp
+index 9b9d84d..1e00f61 100644
+--- a/src/Bot/Factory/PlayerbotFactory.cpp
++++ b/src/Bot/Factory/PlayerbotFactory.cpp
+@@ -30,6 +30,8 @@
+ #include "PlayerbotGuildMgr.h"
+ #include "PlayerbotRepository.h"
+ #include "PlayerbotSpellRepository.h"
++#include "PlayerbotThreadContext.h"
++#include "PlayerbotWorldThread.h"
+ #include "Playerbots.h"
+ #include "QuestDef.h"
+ #include "RandomItemMgr.h"
+@@ -859,7 +861,14 @@ void PlayerbotFactory::Randomize(bool incremental)
+     }
+     ClearInventory();
+     bot->RemoveAllSpellCooldown();
+-    UnbindInstance();
++
++    // Instance binds are shared by every map, and the core unbinds on the world thread
++    if (PlayerbotThreadContext::OtherMapsMayRun())
++        PlayerbotWorldThread::RunForBot(bot, "UnbindInstance",
++                                        [level = level](Player* bot, PlayerbotAI* /*botAI*/)
++                                        { PlayerbotFactory(bot, level).UnbindInstance(); });
++    else
++        UnbindInstance();
+ 
+     bot->GiveLevel(level);
+     bot->InitStatsForLevel(true);
+@@ -1048,7 +1057,14 @@ void PlayerbotFactory::Randomize(bool incremental)
+     if (sPlayerbotAIConfig.RandomBotGuildCount > 0)
+     {
+         LOG_DEBUG("playerbots", "Initializing guilds...");
+-        InitGuild();
++
++        // Guilds and the bot guild cache are world-thread state, like a client's guild packets
++        if (PlayerbotThreadContext::OtherMapsMayRun())
++            PlayerbotWorldThread::RunForBot(bot, "InitGuild",
++                                            [level = level](Player* bot, PlayerbotAI* /*botAI*/)
++                                            { PlayerbotFactory(bot, level).InitGuild(); });
++        else
++            InitGuild();
+     }
+     // bot->SaveToDB(false, false);
+     if (pmo)

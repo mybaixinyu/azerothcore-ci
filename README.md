@@ -92,6 +92,15 @@ build instead of being silently skipped.
   `CheckAreaExploreAndOutdoor()` once after the zone update there. Bots take the
   same path. Upstream master and TrinityCore 3.3.5 behave the same; no upstream
   issue yet.
+- `0017-create-base-maps-before-map-threads.patch` — `MapMgr` keeps one base map per map ID and
+  creates it on first use. `CreateBaseMap` inserts under a mutex, but `FindBaseMap` (behind `FindMap`,
+  `GetZoneId`, `GetAreaId`) reads the same `unordered_map` without it, and `MapMgr::Update` walks it on the world
+  thread while the workers already update the maps it has handed out. A base map created during a map
+  update (bots query zones on maps nobody has entered yet, transports change maps) can rehash the table
+  under those readers, even with one map thread, since the updater still runs maps on its own thread.
+  When the map updater is active, every map of `Map.dbc` (135: 47 plain, 88 instance parents) is now
+  created at startup, so the table is never written after that. Base maps are cheap until a player
+  loads a grid; an empty map's update only walks its (empty) player list. No upstream issue yet.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module
@@ -201,6 +210,12 @@ build instead of being silently skipped.
   those two steps go to the world thread, a moment after the rest. The rest of randomization, refreshing, reviving
   and the random teleports only touch the bot itself, or queue packets and take locks already. Arena teams were
   already assigned on the world thread.
+- `module/0018-playerbots-base-map-lookups.patch` — eighth part, the module's own map lookups.
+  `FindMap(id, 0)` on an instanceable map looks instance 0 up in that map's instance table, which a
+  map thread erases from when an instance unloads, without a lock. Instance IDs start at 1, so the
+  lookup always came back empty; `FindBaseNonInstanceMap` returns the same results without reading
+  that table. Used for `WorldPosition::getMap` and the four direct lookups. `getMap` passed
+  `getInstanceId()`, which is the base map's ID 0, so it never reached an instance either.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

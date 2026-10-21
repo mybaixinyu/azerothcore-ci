@@ -1,0 +1,62 @@
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index 33f7024..03843ac 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
+@@ -2774,7 +2774,7 @@ Unit* PlayerbotAI::GetUnit(CreatureData const* creatureData)
+     if (!creatureData)
+         return nullptr;
+ 
+-    Map* map = sMapMgr->FindMap(creatureData->mapid, 0);
++    Map* map = sMapMgr->FindBaseNonInstanceMap(creatureData->mapid);
+     if (!map)
+         return nullptr;
+ 
+diff --git a/src/Bot/RandomPlayerbotMgr.cpp b/src/Bot/RandomPlayerbotMgr.cpp
+index e4f72fd..baddbbe 100644
+--- a/src/Bot/RandomPlayerbotMgr.cpp
++++ b/src/Bot/RandomPlayerbotMgr.cpp
+@@ -1692,7 +1692,7 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
+                                        // sPlayerbotAIConfig.GrindDistance / 2 : 0);
+         float z = loc.GetPositionZ();
+ 
+-        Map* map = sMapMgr->FindMap(loc.GetMapId(), 0);
++        Map* map = sMapMgr->FindBaseNonInstanceMap(loc.GetMapId());
+         if (!map)
+             continue;
+ 
+diff --git a/src/Mgr/Guild/GuildTaskMgr.cpp b/src/Mgr/Guild/GuildTaskMgr.cpp
+index d8f6a0e..3dc9b87 100644
+--- a/src/Mgr/Guild/GuildTaskMgr.cpp
++++ b/src/Mgr/Guild/GuildTaskMgr.cpp
+@@ -400,7 +400,7 @@ bool GuildTaskMgr::SendKillAdvertisement(CharacterDatabaseTransaction& trans, ui
+         float x = fields[1].Get<float>();
+         float y = fields[2].Get<float>();
+         float z = fields[3].Get<float>();
+-        Map* map = sMapMgr->FindMap(mapid, 0);
++        Map* map = sMapMgr->FindBaseNonInstanceMap(mapid);
+         if (!map)
+             continue;
+ 
+diff --git a/src/Mgr/Travel/TravelMgr.cpp b/src/Mgr/Travel/TravelMgr.cpp
+index a36d7e2..1369899 100644
+--- a/src/Mgr/Travel/TravelMgr.cpp
++++ b/src/Mgr/Travel/TravelMgr.cpp
+@@ -409,7 +409,8 @@ uint32 WorldPosition::getInstanceId()
+ 
+ Map* WorldPosition::getMap()
+ {
+-    return sMapMgr->FindMap(GetMapId(), getMapEntry()->Instanceable() ? getInstanceId() : 0);
++    // Instance ids start at 1, so instance 0 of an instanceable map never exists; skip its unlocked instance table
++    return sMapMgr->FindBaseNonInstanceMap(GetMapId());
+ }
+ 
+ float WorldPosition::getHeight()  // remove const - whipowill
+@@ -4669,7 +4670,7 @@ void TravelMgr::PrepareDestinationCache()
+         float orient = creatureData.orientation;
+         uint32 templateEntry = creatureData.id;
+ 
+-        Map* map = sMapMgr->FindMap(mapId, 0);
++        Map* map = sMapMgr->FindBaseNonInstanceMap(mapId);
+         if (!map)
+             continue;
+ 

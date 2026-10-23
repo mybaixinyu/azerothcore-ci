@@ -1,17 +1,8 @@
 diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
-index b46b6bc..2930972 100644
+index b3c0873..1c2d7ea 100644
 --- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
 +++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
-@@ -11,6 +11,8 @@
- #include "Event.h"
- #include "GroupMgr.h"
- #include "PlayerbotAI.h"
-+#include "PlayerbotOperations.h"
-+#include "PlayerbotWorldThreadProcessor.h"
- #include "Playerbots.h"
- #include "PositionValue.h"
- 
-@@ -81,8 +83,10 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
+@@ -84,8 +84,10 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
          // if (!member && !sObjectMgr->GetPlayerAccountIdByGUID(itr->guid))
          //     continue;
  
@@ -514,7 +505,7 @@ index 0d599cc..dce3d57 100644
          LOG_DEBUG("playerbots", "Bot {} logging out", bot->GetName().c_str());
  
 diff --git a/src/Script/Playerbots.cpp b/src/Script/Playerbots.cpp
-index a2401a2..562eb81 100644
+index 57dfce3..673b036 100644
 --- a/src/Script/Playerbots.cpp
 +++ b/src/Script/Playerbots.cpp
 @@ -24,6 +24,7 @@
@@ -534,10 +525,10 @@ index a2401a2..562eb81 100644
          sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
          PlayerbotWorldThreadProcessor::instance().Update(diff);
 diff --git a/src/Script/WorldThr/PlayerbotOperations.h b/src/Script/WorldThr/PlayerbotOperations.h
-index 4e152f8..c92880c 100644
+index 61f6a49..934a61d 100644
 --- a/src/Script/WorldThr/PlayerbotOperations.h
 +++ b/src/Script/WorldThr/PlayerbotOperations.h
-@@ -415,43 +415,6 @@ private:
+@@ -416,43 +416,6 @@ private:
      std::string m_arenaTeamName;
  };
  
@@ -581,7 +572,7 @@ index 4e152f8..c92880c 100644
  // Add player bot operation (for logging in bots from map threads)
  class AddPlayerBotOperation : public PlayerbotOperation
  {
-@@ -581,4 +544,39 @@ private:
+@@ -619,4 +582,39 @@ private:
      std::function<void(Player*, PlayerbotAI*)> m_task;
  };
  

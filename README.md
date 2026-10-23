@@ -243,7 +243,9 @@ build instead of being silently skipped.
   tables (flight-master hubs, bankers, grind spots). They are built at startup, but the teleport and RPG
   lookups that bots make on their map threads used `operator[]`, which inserts an empty entry for any level
   the table does not have. Those lookups now use `find` and return an empty list, which is what the
-  inserted entry held.
+  inserted entry held. Since module e88cc40 (#2936) upstream reads `GetTeleportLocations` with `find` and
+  fills every level up to `MaxPlayerLevel` at startup, so the patch only covers `GetTravelHubs`,
+  `GetCityLocations` and `GetLocsPerLevelCache`, which still matter for a level above that cap.
 - `module/0022-playerbots-battlemaster-own-map.patch` — tenth part. `GetBattleMasterGUID` (a bot queueing
   for a battleground, on its own map thread) looked each battlemaster up in its map's creature store and
   only then skipped the ones on another map, so it read the capitals' stores while their threads added

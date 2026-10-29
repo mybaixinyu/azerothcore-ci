@@ -1,0 +1,36 @@
+diff --git a/src/server/game/AI/SmartScripts/SmartScript.cpp b/src/server/game/AI/SmartScripts/SmartScript.cpp
+index 35a8896..8742604 100644
+--- a/src/server/game/AI/SmartScripts/SmartScript.cpp
++++ b/src/server/game/AI/SmartScripts/SmartScript.cpp
+@@ -4010,22 +4010,20 @@ void SmartScript::GetTargets(ObjectVector& targets, SmartScriptHolder const& e,
+             {
+                 if (WorldObject* owner = targets.front())
+                 {
+-                    targets.clear();
++                    Unit* base = nullptr;
+ 
+                     if (IsCreature(owner))
+-                    {
+-                        if (Unit* base = ObjectAccessor::GetUnit(*owner, owner->ToCreature()->GetCharmerOrOwnerGUID()))
+-                            targets.push_back(base);
+-                    }
++                        base = ObjectAccessor::GetUnit(*owner, owner->ToCreature()->GetCharmerOrOwnerGUID());
+                     else if (IsGameObject(owner))
+-                    {
+-                        if (Unit* base = ObjectAccessor::GetUnit(*owner, owner->ToGameObject()->GetOwnerGUID()))
+-                            targets.push_back(base);
+-                    }
++                        base = ObjectAccessor::GetUnit(*owner, owner->ToGameObject()->GetOwnerGUID());
+                     else if (IsPlayer(owner))
++                        base = owner->ToPlayer()->GetCharmerOrOwner();
++
++                    // An owner that has no owner of its own (a player summoner) stays the target
++                    if (base)
+                     {
+-                        if (Unit* base = owner->ToPlayer()->GetCharmerOrOwner())
+-                            targets.push_back(base);
++                        targets.clear();
++                        targets.push_back(base);
+                     }
+                 }
+             }

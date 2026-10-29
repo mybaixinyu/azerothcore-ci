@@ -1,0 +1,17 @@
+diff --git a/src/server/game/AI/SmartScripts/SmartScript.cpp b/src/server/game/AI/SmartScripts/SmartScript.cpp
+index 35a8896..acf4425 100644
+--- a/src/server/game/AI/SmartScripts/SmartScript.cpp
++++ b/src/server/game/AI/SmartScripts/SmartScript.cpp
+@@ -225,6 +225,12 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
+ 
+             for (WorldObject* target : targets)
+             {
++                // A player's pet, guardian or totem without this text speaks through its owner
++                if (!e.action.talk.useTalkTarget && IsCreature(target))
++                    if (Player* owner = target->ToCreature()->GetCharmerOrOwnerPlayerOrPlayerItself())
++                        if (!sCreatureTextMgr->TextExist(target->GetEntry(), uint8(e.action.talk.textGroupID)))
++                            target = owner;
++
+                 if (IsCreature((target)) && !target->ToCreature()->IsPet()) // Prevented sending text to pets.
+                 {
+                     if (e.action.talk.useTalkTarget)

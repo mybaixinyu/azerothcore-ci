@@ -124,6 +124,14 @@ build instead of being silently skipped.
   check are unchanged. Found by the second TSan run. Mail ids and pet numbers already take a lock;
   auction and equipment set ids, and the other global guids, are only generated on the world thread.
   Upstream AzerothCore and TrinityCore have the same plain counter; no upstream issue.
+- `0023-smart-talk-owner-fallback.patch` — `SMART_ACTION_TALK` makes a non-pet creature target the
+  talker, so when the target is a player's guardian or totem (the invoker of a creature the killing
+  blow came from, e.g. a Greater Fire Elemental, Magma Totem or Spirit Wolf for Freed Crusader
+  actionlist 3027400) the line is looked up on the guardian and fails with `non-existent Text id`;
+  a pet target was skipped and nothing was said. Now, without `useTalkTarget`, a creature target owned
+  or charmed by a player that has no text for that group is replaced by its owner, so the script's
+  own creature speaks to the player. Targets with the text (vehicles, charmed NPCs that do talk) and
+  creatures without a player owner are unchanged. No upstream issue.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

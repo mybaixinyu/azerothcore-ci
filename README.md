@@ -133,6 +133,14 @@ build instead of being silently skipped.
   landing the killing blow the blessing, talk and Holy Light went to that guardian (the talk failing with
   `non-existent Text id`); targeting 23 with the flag sends all three to the player. No world DB script
   used the flag before (checked 2026-10-29), so nothing else changes. No upstream issue.
+- `0024-smart-talk-owner-fallback.patch` — `SMART_ACTION_TALK` makes a non-pet creature target the
+  talker, so when the target is a player's guardian or totem the line is looked up on the guardian and
+  fails with `non-existent Text id`; a pet target was skipped and nothing was said. Seen with Bloodmaul
+  Mauler 19993 "On Aggro - Say text 0" targeting its victim, a shaman's Spirit Wolf 29264; 59 world DB
+  talk lines target the victim. Now, without `useTalkTarget`, a creature target owned or charmed by a
+  player that has no text for that group is replaced by its owner, so the script's own creature speaks
+  to the player. Targets with the text (vehicles, charmed NPCs that do talk) and creatures without a
+  player owner are unchanged. No upstream issue.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

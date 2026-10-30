@@ -141,6 +141,15 @@ build instead of being silently skipped.
   player that has no text for that group is replaced by its owner, so the script's own creature speaks
   to the player. Targets with the text (vehicles, charmed NPCs that do talk) and creatures without a
   player owner are unchanged. No upstream issue.
+- `0025-time-sync-pending-needs-socket.patch` — `WorldSession::SendTimeSync` sends `SMSG_TIME_SYNC_REQ`
+  every 10 s and records the counter in `_pendingTimeSyncRequests`. An entry is erased only by the
+  client's `CMSG_TIME_SYNC_RESP`, and the whole map is cleared only by `ResetTimeSync` when the player is
+  added to a map. A playerbots session has no socket, so `SendPacket` drops the request and no reply can
+  ever come back; the map then grows by one 48-byte node per bot every 10 s. Measured on 2026-10-30:
+  1000 sessions × 1641 entries at 4 h 37 min uptime, about 16.5 MiB/h. The counter is now recorded only
+  when `m_Socket` is set, which is the same check `SendPacket` uses. The packet, the `OnPacketSent` hook
+  and the timer are unchanged, and sessions with a socket behave exactly as before. Same code on
+  AzerothCore master; no upstream issue.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

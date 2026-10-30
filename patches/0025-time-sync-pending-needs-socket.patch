@@ -1,0 +1,15 @@
+diff --git a/src/server/game/Server/WorldSession.cpp b/src/server/game/Server/WorldSession.cpp
+index fc96398..43a939d 100644
+--- a/src/server/game/Server/WorldSession.cpp
++++ b/src/server/game/Server/WorldSession.cpp
+@@ -1525,7 +1525,9 @@ void WorldSession::SendTimeSync()
+     data << uint32(_timeSyncNextCounter);
+     SendPacket(&data);
+ 
+-    _pendingTimeSyncRequests[_timeSyncNextCounter] = getMSTime();
++    // SendPacket drops the packet without a socket (playerbots sessions), so no reply can come back
++    if (m_Socket)
++        _pendingTimeSyncRequests[_timeSyncNextCounter] = getMSTime();
+ 
+     // Schedule next sync in 10 sec (except for the 2 first packets, which are spaced by only 5s)
+     _timeSyncTimer = _timeSyncNextCounter == 0 ? 5000 : 10000;

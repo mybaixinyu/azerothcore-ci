@@ -60,8 +60,10 @@ sources run side by side took 38 minutes with it, on an empty cache, and 37 with
 
 A build uses `pgo/worldserver.profdata` when that file exists. To make one: dispatch with `-f pgo_generate=true`,
 install that run, start `worldserver` with `LLVM_PROFILE_FILE` set and let it run under load, stop it cleanly (the
-profile is written at exit), then `xcrun llvm-profdata merge -o pgo/worldserver.profdata <raw files>`. A source change
-only loses the profile for the functions it changes.
+profile is written at exit), then `xcrun llvm-profdata merge --sparse -o pgo/worldserver.profdata <raw files>`. `--sparse` drops functions the
+training never ran, so they compile as unprofiled code; without it they are marked cold, and a training run without a
+real player would mark code only a real player reaches. A source change only loses the profile for the functions it
+changes.
 
 ### ThreadSanitizer build
 

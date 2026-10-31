@@ -163,6 +163,9 @@ build instead of being silently skipped.
 - `0029-random-movement-local-path-generator.patch` — `RandomMovementGenerator` kept a 1792-byte `PathGenerator` per
   creature (57,068 blocks, 97.5 MiB) that one branch of `_setRandomLocation` uses and clears before each use. It is now
   a local variable there.
+- `0030-map-update-prefetch-next-object.patch` — `Map::UpdateNonPlayerObjects` walks pointers to objects scattered far
+  beyond hardware prefetch (79% of address gaps exceed 64 MiB). It now prefetches the next object's hot 128-byte
+  lines, taken from a field-level profile and the layout after 0027.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

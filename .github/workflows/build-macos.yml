@@ -16,6 +16,10 @@ on:
         description: 'Build with ThreadSanitizer (separate artifact, never installed into server-pb)'
         type: boolean
         default: false
+      lto:
+        description: 'Build with ThinLTO'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -29,6 +33,8 @@ jobs:
       CCACHE_MAXSIZE: 2G
       CCACHE_COMPRESS: 'true'
       VARIANT: ${{ inputs.tsan && '-tsan' || '' }}
+      LTO_FLAG: ${{ inputs.lto && '-flto=thin' || '' }}
+      CCACHE_KEY: xcode-27${{ inputs.tsan && '-tsan' || '' }}${{ inputs.lto && '-lto' || '' }}
 
     steps:
       - name: Checkout CI repo
@@ -80,10 +86,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache:xcode-27${{ env.VARIANT }}:${{ inputs.core_ref }}:${{ github.run_id }}
+          key: ccache:${{ env.CCACHE_KEY }}:${{ inputs.core_ref }}:${{ github.run_id }}
           restore-keys: |
-            ccache:xcode-27${{ env.VARIANT }}:${{ inputs.core_ref }}:
-            ccache:xcode-27${{ env.VARIANT }}:
+            ccache:${{ env.CCACHE_KEY }}:${{ inputs.core_ref }}:
+            ccache:${{ env.CCACHE_KEY }}:
 
       # Flags mirror the local build; keep the two in step when either changes.
       # TSan reports need line numbers, so that variant also carries debug info.
@@ -93,6 +99,9 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DCMAKE_BUILD_TYPE=${{ inputs.tsan && 'RelWithDebInfo' || 'Release' }} \
             -DTSAN=${{ inputs.tsan && 'ON' || 'OFF' }} \
+            -DCMAKE_C_FLAGS="$LTO_FLAG" \
+            -DCMAKE_CXX_FLAGS="$LTO_FLAG" \
+            -DCMAKE_EXE_LINKER_FLAGS="$LTO_FLAG" \
             -DAPPS_BUILD=all \
             -DTOOLS_BUILD=none \
             -DSCRIPTS=static \
@@ -123,6 +132,17 @@ jobs:
 
       - name: Build
         run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      # The flags reach every target only through CMake's defaults, so read an object
+      # file: a ThinLTO one is bitcode (raw or with the Darwin wrapper), not Mach-O.
+      - name: Check the objects are bitcode
+        if: inputs.lto
+        run: |
+          obj=$(find build -name 'Unit.cpp.o' | head -1)
+          case "$(xxd -l4 -p "$obj")" in
+            4243c0de|dec0170b) ;;
+            *) echo "$obj is not bitcode"; exit 1 ;;
+          esac
 
       # Read the hit rate here rather than inferring it from the wall clock.
       - name: ccache stats
@@ -182,6 +202,7 @@ jobs:
             echo "bridge_ref=${{ inputs.bridge_ref }} $(git -C src/modules/mod-questie-bridge rev-parse HEAD)"
             echo "ci_commit=$(git -C ci rev-parse HEAD)"
             echo "tsan=${{ inputs.tsan }}"
+            echo "lto=${{ inputs.lto }}"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"
             done

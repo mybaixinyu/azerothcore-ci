@@ -150,6 +150,19 @@ build instead of being silently skipped.
   when `m_Socket` is set, which is the same check `SendPacket` uses. The packet, the `OnPacketSent` hook
   and the timer are unchanged, and sessions with a socket behave exactly as before. Same code on
   AzerothCore master; no upstream issue.
+- `0027-unit-aura-lists-by-type-compact.patch` — `Unit::m_modAuras` held 317 `std::vector` headers, 7608 of the
+  11,528 bytes of a `Creature`, whose block was 12,288 bytes. A unit uses a handful of those types. The array is now a
+  bitmask of non-empty types plus blocks of eight lists, allocated on first use, so `sizeof(Creature)` is 3968 and the
+  block 4096. An empty type answers from the mask with no second load. Lists never move or shrink away, because callers
+  hold references across aura removal. `Has` rejects values outside the enum, since conditions and spell misc values
+  pass unchecked data. Rejected: a dense list indexed by popcount, because inserting a type shifts it under readers on
+  other map threads; an array of pointers, which saves 5120 bytes per creature against 8192.
+- `0028-script-stacks-as-vectors.patch` — `SmartScript::executionStack` and `AuraScript::m_scriptStates` were libc++
+  deques, which keep a 4096-byte block once used (46,624 such blocks, 182 MiB). Both are stacks whose elements are
+  copied out before the pop and never referenced across a push.
+- `0029-random-movement-local-path-generator.patch` — `RandomMovementGenerator` kept a 1792-byte `PathGenerator` per
+  creature (57,068 blocks, 97.5 MiB) that one branch of `_setRandomLocation` uses and clears before each use. It is now
+  a local variable there.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

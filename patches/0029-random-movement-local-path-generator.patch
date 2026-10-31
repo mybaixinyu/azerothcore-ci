@@ -1,0 +1,55 @@
+diff --git a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp
+index f32542c..9585807 100644
+--- a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp
++++ b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp
+@@ -148,16 +148,12 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
+         }
+         else // ground
+         {
+-            if (!_pathGenerator)
+-                _pathGenerator = std::make_unique<PathGenerator>(creature);
+-            else
+-                _pathGenerator->Clear();
+-
+-            bool result = _pathGenerator->CalculatePath(x, y, levelZ, false);
+-            if (result && !(_pathGenerator->GetPathType() & PATHFIND_NOPATH))
++            PathGenerator pathGenerator(creature);
++            bool result = pathGenerator.CalculatePath(x, y, levelZ, false);
++            if (result && !(pathGenerator.GetPathType() & PATHFIND_NOPATH))
+             {
+                 // generated path is too long
+-                float pathLen = _pathGenerator->getPathLength();
++                float pathLen = pathGenerator.getPathLength();
+                 if (pathLen * pathLen > creature->GetExactDistSq(x, y, levelZ) * MAX_PATH_LENGHT_FACTOR * MAX_PATH_LENGHT_FACTOR)
+                 {
+                     _validPointsVector[_currentPoint].erase(randomIter);
+@@ -165,7 +161,7 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
+                     return;
+                 }
+ 
+-                finalPath = _pathGenerator->GetPath();
++                finalPath = pathGenerator.GetPath();
+                 Movement::PointsArray::iterator itr = finalPath.begin();
+                 Movement::PointsArray::iterator itrNext = finalPath.begin() + 1;
+                 float zDiff, distDiff;
+diff --git a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h
+index f5bdabd..d12db7b 100644
+--- a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h
++++ b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h
+@@ -32,7 +32,7 @@ template<class T>
+ class RandomMovementGenerator : public MovementGeneratorMedium< T, RandomMovementGenerator<T> >
+ {
+ public:
+-    RandomMovementGenerator(float wanderDistance = 0.0f) : _nextMoveTime(0), _moveCount(0), _wanderDistance(wanderDistance), _pathGenerator(nullptr), _currentPoint(RANDOM_POINTS_NUMBER)
++    RandomMovementGenerator(float wanderDistance = 0.0f) : _nextMoveTime(0), _moveCount(0), _wanderDistance(wanderDistance), _currentPoint(RANDOM_POINTS_NUMBER)
+     {
+         _initialPosition.Relocate(0.0f, 0.0f, 0.0f, 0.0f);
+         _destinationPoints.reserve(RANDOM_POINTS_NUMBER);
+@@ -62,7 +62,6 @@ private:
+     TimeTrackerSmall _nextMoveTime;
+     uint8 _moveCount;
+     float _wanderDistance;
+-    std::unique_ptr<PathGenerator> _pathGenerator;
+     std::vector<G3D::Vector3> _destinationPoints;
+     std::vector<uint8> _validPointsVector[RANDOM_POINTS_NUMBER + 1];
+     uint8 _currentPoint;

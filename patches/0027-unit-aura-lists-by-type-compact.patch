@@ -1,0 +1,210 @@
+diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
+index ce188c5..74c8344 100644
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -4731,9 +4731,73 @@ void Unit::_RemoveNoStackAurasDueToAura(Aura* aura, bool owned)
+ void Unit::_RegisterAuraEffect(AuraEffect* aurEff, bool apply)
+ {
+     if (apply)
+-        m_modAuras[aurEff->GetAuraType()].push_back(aurEff);
++        m_modAuras.Add(aurEff->GetAuraType(), aurEff);
+     else
+-        m_modAuras[aurEff->GetAuraType()].erase(std::remove(m_modAuras[aurEff->GetAuraType()].begin(), m_modAuras[aurEff->GetAuraType()].end(), aurEff), m_modAuras[aurEff->GetAuraType()].end());
++        m_modAuras.Remove(aurEff->GetAuraType(), aurEff);
++}
++
++Unit::AuraEffectsByType::~AuraEffectsByType()
++{
++    for (Block* block = _blocks.load(std::memory_order_relaxed); block;)
++    {
++        Block* next = block->next.load(std::memory_order_relaxed);
++        delete block;
++        block = next;
++    }
++}
++
++Unit::AuraEffectList* Unit::AuraEffectsByType::Find(AuraType type) const
++{
++    for (Block* block = _blocks.load(std::memory_order_relaxed); block; block = block->next.load(std::memory_order_relaxed))
++        for (uint32 i = 0; i < BLOCK_LISTS; ++i)
++            if (block->types[i].load(std::memory_order_relaxed) == type + 1)
++                return &block->lists[i];
++
++    return nullptr;
++}
++
++Unit::AuraEffectList& Unit::AuraEffectsByType::Create(AuraType type)
++{
++    std::atomic<Block*>* link = &_blocks;
++    while (Block* block = link->load(std::memory_order_relaxed))
++    {
++        for (uint32 i = 0; i < BLOCK_LISTS; ++i)
++        {
++            if (!block->types[i].load(std::memory_order_relaxed))
++            {
++                block->types[i].store(type + 1, std::memory_order_relaxed);
++                return block->lists[i];
++            }
++        }
++        link = &block->next;
++    }
++
++    Block* block = new Block();
++    block->types[0].store(type + 1, std::memory_order_relaxed);
++    link->store(block, std::memory_order_relaxed);
++    return block->lists[0];
++}
++
++void Unit::AuraEffectsByType::Add(AuraType type, AuraEffect* aurEff)
++{
++    AuraEffectList* list = Find(type);
++    if (!list)
++        list = &Create(type);
++
++    list->push_back(aurEff);
++    if (list->size() == 1)
++        _nonEmpty[type / 64].fetch_or(uint64(1) << (type % 64), std::memory_order_release);
++}
++
++void Unit::AuraEffectsByType::Remove(AuraType type, AuraEffect* aurEff)
++{
++    if (!Has(type))
++        return;
++
++    AuraEffectList* list = Find(type);
++    list->erase(std::remove(list->begin(), list->end(), aurEff), list->end());
++    if (list->empty())
++        _nonEmpty[type / 64].fetch_and(~(uint64(1) << (type % 64)), std::memory_order_relaxed);
+ }
+ 
+ // All aura base removes should go threw this function!
+@@ -5154,10 +5218,11 @@ void Unit::RemoveAurasDueToItemSpell(uint32 spellId, ObjectGuid castItemGuid)
+ void Unit::RemoveAurasByType(AuraType auraType, ObjectGuid casterGUID, Aura* except, bool negative, bool positive)
+ {
+     // simple check if list is empty
+-    if (m_modAuras[auraType].empty())
++    if (!m_modAuras.Has(auraType))
+         return;
+ 
+-    for (AuraEffectList::iterator iter = m_modAuras[auraType].begin(); iter != m_modAuras[auraType].end();)
++    AuraEffectList const& auraEffects = m_modAuras.Get(auraType);
++    for (AuraEffectList::const_iterator iter = auraEffects.begin(); iter != auraEffects.end();)
+     {
+         Aura* aura = (*iter)->GetBase();
+         AuraApplication* aurApp = aura->GetApplicationOfTarget(GetGUID());
+@@ -5169,7 +5234,7 @@ void Unit::RemoveAurasByType(AuraType auraType, ObjectGuid casterGUID, Aura* exc
+             uint32 removedAuras = m_removedAurasCount;
+             RemoveAura(aurApp);
+             if (m_removedAurasCount > removedAuras)
+-                iter = m_modAuras[auraType].begin();
++                iter = auraEffects.begin();
+         }
+     }
+ }
+@@ -5780,7 +5845,7 @@ bool Unit::HasAura(uint32 spellId, ObjectGuid casterGUID, ObjectGuid itemCasterG
+ 
+ bool Unit::HasAuraType(AuraType auraType) const
+ {
+-    return (!m_modAuras[auraType].empty());
++    return m_modAuras.Has(auraType);
+ }
+ 
+ bool Unit::HasAuraTypeWithCaster(AuraType auratype, ObjectGuid caster) const
+@@ -5911,7 +5976,8 @@ uint32 Unit::GetDiseasesByCaster(ObjectGuid casterGUID, uint8 mode)
+     uint32 diseases = 0;
+     for (uint8 index = 0; diseaseAuraTypes[index] != SPELL_AURA_NONE; ++index)
+     {
+-        for (AuraEffectList::iterator i = m_modAuras[diseaseAuraTypes[index]].begin(); i != m_modAuras[diseaseAuraTypes[index]].end();)
++        AuraEffectList const& diseaseEffects = m_modAuras.Get(diseaseAuraTypes[index]);
++        for (AuraEffectList::const_iterator i = diseaseEffects.begin(); i != diseaseEffects.end();)
+         {
+             // Get auras with disease dispel type by caster
+             if ((*i)->GetSpellInfo()->Dispel == DISPEL_DISEASE
+@@ -5922,7 +5988,7 @@ uint32 Unit::GetDiseasesByCaster(ObjectGuid casterGUID, uint8 mode)
+                 if (mode == 1)
+                 {
+                     RemoveAura((*i)->GetId(), (*i)->GetCasterGUID());
+-                    i = m_modAuras[diseaseAuraTypes[index]].begin();
++                    i = diseaseEffects.begin();
+                     continue;
+                 }
+                 // used for glyph of scourge strike
+@@ -15868,7 +15934,8 @@ private:
+ void Unit::CastDelayedSpellWithPeriodicAmount(Unit* caster, uint32 spellId, AuraType auraType, int32 addAmount, uint8 effectIndex)
+ {
+     AuraEffect* aurEff = nullptr;
+-    for (AuraEffectList::iterator i = m_modAuras[auraType].begin(); i != m_modAuras[auraType].end(); ++i)
++    AuraEffectList const& auraEffects = m_modAuras.Get(auraType);
++    for (AuraEffectList::const_iterator i = auraEffects.begin(); i != auraEffects.end(); ++i)
+     {
+         aurEff = *i;
+         if (aurEff->GetCasterGUID() != caster->GetGUID() || aurEff->GetId() != spellId || aurEff->GetEffIndex() != effectIndex || !aurEff->GetTotalTicks())
+diff --git a/src/server/game/Entities/Unit/Unit.h b/src/server/game/Entities/Unit/Unit.h
+index cdff5aa..34848bc 100644
+--- a/src/server/game/Entities/Unit/Unit.h
++++ b/src/server/game/Entities/Unit/Unit.h
+@@ -31,6 +31,7 @@
+ #include "ThreatManager.h"
+ #include "UnitDefines.h"
+ #include "UnitUtils.h"
++#include <atomic>
+ #include <boost/container/flat_map.hpp>
+ #include <functional>
+ #include <utility>
+@@ -1433,7 +1434,7 @@ public:
+     void _RemoveAllAuraStatMods();
+     void _ApplyAllAuraStatMods();
+ 
+-    [[nodiscard]] AuraEffectList const& GetAuraEffectsByType(AuraType type) const { return m_modAuras[type]; }
++    [[nodiscard]] AuraEffectList const& GetAuraEffectsByType(AuraType type) const { return m_modAuras.Get(type); }
+     AuraList&       GetSingleCastAuras()       { return m_scAuras; }
+     [[nodiscard]] AuraList const& GetSingleCastAuras() const { return m_scAuras; }
+ 
+@@ -2177,7 +2178,46 @@ protected:
+     std::vector<Aura*> m_auraUpdateSnapshot; // _UpdateSpells scratch buffer
+     uint32 m_removedAurasCount;
+ 
+-    AuraEffectList m_modAuras[TOTAL_AURAS];
++    // A unit uses a handful of the aura types, so the lists live in small blocks and a
++    // bitmask answers for the empty ones. Callers hold references across aura removal,
++    // so a list never moves and stays allocated until the unit is destroyed. A reader on
++    // another map thread sees a block entry only through the bit set after it was written.
++    class AuraEffectsByType
++    {
++    public:
++        AuraEffectsByType() = default;
++        AuraEffectsByType(AuraEffectsByType const&) = delete;
++        AuraEffectsByType& operator=(AuraEffectsByType const&) = delete;
++        ~AuraEffectsByType();
++
++        [[nodiscard]] bool Has(AuraType type) const
++        {
++            // Conditions and spell misc values pass unchecked data here
++            uint32 index = uint32(type);
++            return index < TOTAL_AURAS && ((_nonEmpty[index / 64].load(std::memory_order_acquire) >> (index % 64)) & 1);
++        }
++        [[nodiscard]] AuraEffectList const& Get(AuraType type) const { return Has(type) ? *Find(type) : _noEffects; }
++        void Add(AuraType type, AuraEffect* aurEff);
++        void Remove(AuraType type, AuraEffect* aurEff);
++
++    private:
++        static constexpr uint32 BLOCK_LISTS = 8;
++        struct Block
++        {
++            std::atomic<uint16> types[BLOCK_LISTS]{}; // type + 1, 0 when the slot is free
++            std::atomic<Block*> next{nullptr};
++            AuraEffectList lists[BLOCK_LISTS];
++        };
++
++        [[nodiscard]] AuraEffectList* Find(AuraType type) const;
++        AuraEffectList& Create(AuraType type);
++
++        inline static AuraEffectList const _noEffects;
++        std::atomic<uint64> _nonEmpty[(TOTAL_AURAS + 63) / 64]{};
++        std::atomic<Block*> _blocks{nullptr};
++    };
++
++    AuraEffectsByType m_modAuras;
+     AuraList m_scAuras;                        // casted singlecast auras
+     AuraApplicationList m_interruptableAuras;  // auras which have interrupt mask applied on unit
+     AuraStateAurasMap m_auraStateAuras;        // Used for improve performance of aura state checks on aura apply/remove

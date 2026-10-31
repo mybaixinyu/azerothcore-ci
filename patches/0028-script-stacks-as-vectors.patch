@@ -1,0 +1,43 @@
+diff --git a/src/server/game/AI/SmartScripts/SmartScript.h b/src/server/game/AI/SmartScripts/SmartScript.h
+index 250fdd7..99f3963 100644
+--- a/src/server/game/AI/SmartScripts/SmartScript.h
++++ b/src/server/game/AI/SmartScripts/SmartScript.h
+@@ -23,7 +23,7 @@
+ #include "SmartScriptMgr.h"
+ #include "Spell.h"
+ #include "Unit.h"
+-#include <deque>
++#include <vector>
+ 
+ class SmartScript
+ {
+@@ -283,7 +283,7 @@ private:
+ 
+     GuidUnorderedSet _summonList;
+ 
+-    std::deque<SmartScriptFrame> executionStack;
++    std::vector<SmartScriptFrame> executionStack;
+ };
+ 
+ #endif
+diff --git a/src/server/game/Spells/SpellScript.h b/src/server/game/Spells/SpellScript.h
+index 473c2d3..34094b9 100644
+--- a/src/server/game/Spells/SpellScript.h
++++ b/src/server/game/Spells/SpellScript.h
+@@ -23,6 +23,7 @@
+ #include "SpellAuraDefines.h"
+ #include "Util.h"
+ #include <stack>
++#include <vector>
+ 
+ class Unit;
+ class SpellInfo;
+@@ -719,7 +720,7 @@ private:
+             : _auraApplication(auraApplication), _currentScriptState(currentScriptState), _defaultActionPrevented(defaultActionPrevented)
+         {}
+     };
+-    typedef std::stack<ScriptStateStore> ScriptStateStack;
++    typedef std::stack<ScriptStateStore, std::vector<ScriptStateStore>> ScriptStateStack;
+     ScriptStateStack m_scriptStates;
+ 
+ public:

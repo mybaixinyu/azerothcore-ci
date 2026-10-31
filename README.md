@@ -280,14 +280,13 @@ build instead of being silently skipped.
   `PlayerbotAI::GetUnit(CreatureData const*)`, which the 0018 note had wrongly listed as unused.
 - `module/0026-playerbots-keep-engine-lists-on-switch.patch` — `PlayerbotAI::ChangeEngine` ran `Engine::Init` on
   every combat/non-combat switch, about 12 times a second at 1000 bots, deleting and re-creating every `TriggerNode`
-  and `Multiplier` (1.6M small blocks live, 71% of a sample of new blocks up to 64 bytes). A switch now only empties
-  the action queue, and rebuilds if the strategies changed, the engine holds a custom strategy (its text is edited
-  with only the current engine rebuilt) or `Engine::BuildInputs` differs. That hash covers what the 316 `InitTriggers`
-  and `InitMultipliers` bodies read: spells as `HasSpell` sees them, talents, level, active spec, the food cheat and
-  three config flags. Every 64th kept build per engine compares against a fresh build, logs one error and rebuilds on
-  a mismatch, so a new input upstream is caught. Spell and talent hooks were rejected because `addSpell` bypasses
-  them. Multipliers now keep their members across switches; the only ones with members are boss helpers, which drop
-  the unit out of combat, and a mount-check cache.
+  and `Multiplier` (1.6M small blocks live, 71% of a sample of new blocks up to 64 bytes). A switch now empties the
+  action queue and rebuilds the multipliers, whose boss helpers keep unit pointers meant for one combat. It keeps the
+  trigger list unless the strategies changed, the engine holds a custom strategy (its text is edited with only the
+  current engine rebuilt) or `Engine::BuildInputs` differs. That hash covers what the `InitTriggers` bodies read:
+  spells as `HasSpell` sees them, talents, level, active spec, the food cheat and three config flags. Every 64th kept
+  list per engine compares against a fresh build, logs one error and rebuilds on a mismatch, so a new input upstream
+  is caught. Spell and talent hooks were rejected because `addSpell` bypasses them.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

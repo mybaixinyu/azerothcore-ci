@@ -1,5 +1,5 @@
 diff --git a/src/Bot/Engine/Engine.cpp b/src/Bot/Engine/Engine.cpp
-index 368994d..10ceaa8 100644
+index 368994d..f7c9305 100644
 --- a/src/Bot/Engine/Engine.cpp
 +++ b/src/Bot/Engine/Engine.cpp
 @@ -6,6 +6,7 @@
@@ -19,7 +19,7 @@ index 368994d..10ceaa8 100644
  Engine::Engine(PlayerbotAI* botAI, AiObjectContext* factory) : PlayerbotAIAware(botAI), aiObjectContext(factory)
  {
      lastRelevance = 0.0f;
-@@ -86,16 +89,21 @@ Engine::~Engine(void)
+@@ -86,16 +89,34 @@ Engine::~Engine(void)
      strategies.clear();
  }
  
@@ -36,6 +36,19 @@ index 368994d..10ceaa8 100644
      }
 +}
 +
++void Engine::RebuildMultipliers()
++{
++    for (Multiplier* multiplier : multipliers)
++    {
++        delete multiplier;
++    }
++
++    multipliers.clear();
++
++    for (auto const& [name, strategy] : strategies)
++        strategy->InitMultipliers(multipliers);
++}
++
 +void Engine::Reset()
 +{
 +    strategyTypeMask = 0;
@@ -44,7 +57,7 @@ index 368994d..10ceaa8 100644
  
      for (TriggerNode* trigger : triggers)
      {
-@@ -119,11 +127,13 @@ void Engine::Init()
+@@ -119,11 +140,13 @@ void Engine::Init()
      Reset();
  
      hasTargetExclusions = false;
@@ -58,7 +71,7 @@ index 368994d..10ceaa8 100644
          strategy->InitMultipliers(multipliers);
          strategy->InitTriggers(triggers);
          for (auto &iter : strategy->actionNodeFactories.creators)
-@@ -138,6 +148,106 @@ void Engine::Init()
+@@ -138,6 +161,97 @@ void Engine::Init()
          fprintf(file, "\n");
          fclose(file);
      }
@@ -68,8 +81,8 @@ index 368994d..10ceaa8 100644
 +    keptBuilds = 0;
 +}
 +
-+// A state switch must drop the queued actions. The trigger and multiplier lists only change
-+// when the strategies or what their Init functions read changed.
++// A state switch must drop the queued actions and the multipliers, whose boss helpers keep unit pointers
++// meant for one combat. The trigger list only changes when the strategies or what InitTriggers reads changed.
 +void Engine::EnterState()
 +{
 +    // A custom strategy's text is edited through a single strategy object, with only the current engine rebuilt
@@ -80,8 +93,9 @@ index 368994d..10ceaa8 100644
 +    }
 +
 +    ClearQueue();
++    RebuildMultipliers();
 +
-+    // Catches an Init function that starts reading something BuildInputs does not cover
++    // Catches an InitTriggers function that starts reading something BuildInputs does not cover
 +    if (++keptBuilds < KEPT_BUILDS_PER_CHECK)
 +        return;
 +
@@ -97,7 +111,7 @@ index 368994d..10ceaa8 100644
 +    Init();
 +}
 +
-+// Everything the InitTriggers and InitMultipliers functions read besides the strategy list
++// Everything the InitTriggers functions read besides the strategy list
 +uint64 Engine::BuildInputs()
 +{
 +    Player* bot = botAI->GetBot();
@@ -134,14 +148,10 @@ index 368994d..10ceaa8 100644
 +bool Engine::MatchesFreshBuild()
 +{
 +    std::vector<TriggerNode*> freshTriggers;
-+    std::vector<Multiplier*> freshMultipliers;
 +    for (auto const& [name, strategy] : strategies)
-+    {
-+        strategy->InitMultipliers(freshMultipliers);
 +        strategy->InitTriggers(freshTriggers);
-+    }
 +
-+    bool matches = freshTriggers.size() == triggers.size() && freshMultipliers.size() == multipliers.size();
++    bool matches = freshTriggers.size() == triggers.size();
 +
 +    for (size_t i = 0; matches && i < triggers.size(); ++i)
 +    {
@@ -152,20 +162,14 @@ index 368994d..10ceaa8 100644
 +            matches = kept[j].getName() == fresh[j].getName() && kept[j].getRelevance() == fresh[j].getRelevance();
 +    }
 +
-+    for (size_t i = 0; matches && i < multipliers.size(); ++i)
-+        matches = multipliers[i]->getName() == freshMultipliers[i]->getName();
-+
 +    for (TriggerNode* trigger : freshTriggers)
 +        delete trigger;
-+
-+    for (Multiplier* multiplier : freshMultipliers)
-+        delete multiplier;
 +
 +    return matches;
  }
  
  bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
-@@ -371,6 +481,7 @@ void Engine::addStrategy(std::string const name, bool init)
+@@ -371,6 +485,7 @@ void Engine::addStrategy(std::string const name, bool init)
  
          LogAction("S:+%s", strategy->getName().c_str());
          strategies[strategy->getName()] = strategy;
@@ -173,7 +177,7 @@ index 368994d..10ceaa8 100644
      }
      if (init)
          Init();
-@@ -422,6 +533,7 @@ bool Engine::removeStrategy(std::string const name, bool init)
+@@ -422,6 +537,7 @@ bool Engine::removeStrategy(std::string const name, bool init)
  
      LogAction("S:-%s", name.c_str());
      strategies.erase(i);
@@ -182,7 +186,7 @@ index 368994d..10ceaa8 100644
          Init();
  
 diff --git a/src/Bot/Engine/Engine.h b/src/Bot/Engine/Engine.h
-index 36d26ca..10bbf07 100644
+index 36d26ca..4a3553e 100644
 --- a/src/Bot/Engine/Engine.h
 +++ b/src/Bot/Engine/Engine.h
 @@ -65,6 +65,7 @@ public:
@@ -193,17 +197,18 @@ index 36d26ca..10bbf07 100644
      void addStrategy(std::string const name, bool init = true);
      void addStrategies(std::string first, ...);
      void addStrategiesNoInit(std::string first, ...);
-@@ -106,6 +107,9 @@ protected:
+@@ -106,6 +107,10 @@ protected:
      bool MultiplyAndPush(std::vector<NextAction> actions, float forceRelevance, bool skipPrerequisites, Event event,
                           char const* pushType);
      void Reset();
 +    void ClearQueue();
++    void RebuildMultipliers();
 +    uint64 BuildInputs();
 +    bool MatchesFreshBuild();
      void ProcessTriggers(bool minimal);
      void PushAgain(ActionNode* actionNode, float relevance, Event event);
      virtual Action* InitializeAction(ActionNode* actionNode);
-@@ -120,6 +124,12 @@ protected:
+@@ -120,6 +125,12 @@ protected:
      std::string lastAction;
      uint32 strategyTypeMask;
      bool hasTargetExclusions = false;

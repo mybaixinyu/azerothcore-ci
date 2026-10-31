@@ -1,0 +1,64 @@
+diff --git a/src/server/game/Globals/ObjectAccessor.cpp b/src/server/game/Globals/ObjectAccessor.cpp
+index 8b15ce734..e378dd679 100644
+--- a/src/server/game/Globals/ObjectAccessor.cpp
++++ b/src/server/game/Globals/ObjectAccessor.cpp
+@@ -28,6 +28,34 @@
+ #include "Pet.h"
+ #include "Player.h"
+ #include "Transport.h"
++#include <pthread.h>
++
++// libc++'s std::shared_mutex takes a mutex twice per read, and Find runs for every aura whose
++// caster is a player, on all map threads at once. Find takes this lock instead, whose readers do
++// not exclude each other; everyone else keeps GetLock(). Writers hold both, always GetLock() first.
++// Constant-initialized with no destructor, so it stays valid for the late lookups described below.
++template<class T>
++static pthread_rwlock_t findLock = PTHREAD_RWLOCK_INITIALIZER;
++
++template<class T>
++class FindReadGuard
++{
++public:
++    FindReadGuard() { if (pthread_rwlock_rdlock(&findLock<T>) != 0) ABORT(); }
++    ~FindReadGuard() { pthread_rwlock_unlock(&findLock<T>); }
++    FindReadGuard(FindReadGuard const&) = delete;
++    FindReadGuard& operator=(FindReadGuard const&) = delete;
++};
++
++template<class T>
++class FindWriteGuard
++{
++public:
++    FindWriteGuard() { if (pthread_rwlock_wrlock(&findLock<T>) != 0) ABORT(); }
++    ~FindWriteGuard() { pthread_rwlock_unlock(&findLock<T>); }
++    FindWriteGuard(FindWriteGuard const&) = delete;
++    FindWriteGuard& operator=(FindWriteGuard const&) = delete;
++};
+ 
+ template<class T>
+ void HashMapHolder<T>::Insert(T* o)
+@@ -37,6 +65,7 @@ void HashMapHolder<T>::Insert(T* o)
+         "Only Player and Motion Transport can be registered in global HashMapHolder");
+ 
+     std::unique_lock<std::shared_mutex> lock(*GetLock());
++    FindWriteGuard<T> findGuard;
+ 
+     GetContainer()[o->GetGUID()] = o;
+ }
+@@ -45,6 +74,7 @@ template<class T>
+ void HashMapHolder<T>::Remove(T* o)
+ {
+     std::unique_lock<std::shared_mutex> lock(*GetLock());
++    FindWriteGuard<T> findGuard;
+ 
+     GetContainer().erase(o->GetGUID());
+ }
+@@ -52,7 +82,7 @@ void HashMapHolder<T>::Remove(T* o)
+ template<class T>
+ T* HashMapHolder<T>::Find(ObjectGuid guid)
+ {
+-    std::shared_lock<std::shared_mutex> lock(*GetLock());
++    FindReadGuard<T> findGuard;
+ 
+     typename MapType::iterator itr = GetContainer().find(guid);
+     return (itr != GetContainer().end()) ? itr->second : nullptr;

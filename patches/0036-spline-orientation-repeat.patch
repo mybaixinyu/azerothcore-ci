@@ -1,0 +1,46 @@
+diff --git a/src/server/game/Movement/Spline/MoveSpline.cpp b/src/server/game/Movement/Spline/MoveSpline.cpp
+index 1ef4ea3d8..0b0d21c95 100644
+--- a/src/server/game/Movement/Spline/MoveSpline.cpp
++++ b/src/server/game/Movement/Spline/MoveSpline.cpp
+@@ -18,6 +18,7 @@
+ #include "MoveSpline.h"
+ #include "Creature.h"
+ #include "Log.h"
++#include <bit>
+ #include <sstream>
+ 
+ namespace Movement
+@@ -56,7 +57,16 @@ namespace Movement
+             {
+                 Vector3 hermite;
+                 spline.evaluate_derivative(point_Idx, u, hermite);
+-                c.orientation = std::atan2(hermite.y, hermite.x);
++                // A linear segment's derivative is constant, so most ticks repeat these same bits
++                uint32 const y = std::bit_cast<uint32>(hermite.y);
++                uint32 const x = std::bit_cast<uint32>(hermite.x);
++                if (y != lastAngleY || x != lastAngleX)
++                {
++                    lastAngleY = y;
++                    lastAngleX = x;
++                    lastAngle = std::atan2(hermite.y, hermite.x);
++                }
++                c.orientation = lastAngle;
+             }
+ 
+             if (splineflags.orientationInversed)
+diff --git a/src/server/game/Movement/Spline/MoveSpline.h b/src/server/game/Movement/Spline/MoveSpline.h
+index 2261f47f7..a3cf345b5 100644
+--- a/src/server/game/Movement/Spline/MoveSpline.h
++++ b/src/server/game/Movement/Spline/MoveSpline.h
+@@ -69,6 +69,11 @@ namespace Movement
+         int32           point_Idx;
+         int32           point_Idx_offset;
+ 
++        // Last atan2 result and its exact input bits. Zeros are a valid entry: atan2(+0, +0) is +0.
++        mutable uint32  lastAngleY{0};
++        mutable uint32  lastAngleX{0};
++        mutable float   lastAngle{0.0f};
++
+         void init_spline(MoveSplineInitArgs const& args);
+ 
+     protected:

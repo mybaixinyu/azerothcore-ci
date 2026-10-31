@@ -19,7 +19,7 @@ on:
       lto:
         description: 'Build with ThinLTO'
         type: boolean
-        default: false
+        default: true
 
 jobs:
   build:

@@ -50,6 +50,12 @@ scripts/install-artifact.sh <run-id>   # a specific run
 previous binaries as `bin/*.bak-<timestamp>`, and only ever writes `*.dist`
 files into `etc/` — the live configs are left alone.
 
+### ThinLTO
+
+Builds use ThinLTO by default (`-f lto=false` turns it off) and fail if an object file is not bitcode. Measured
+at 1000 bots on 2026-10-31: about 15% fewer instructions and 6 to 11% less CPU time. A build from a cold cache
+took about 38 minutes against 37 without it.
+
 ### ThreadSanitizer build
 
 `-f tsan=true` builds the same sources with `-DTSAN=ON` and debug info, checks that

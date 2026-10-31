@@ -1,0 +1,223 @@
+diff --git a/src/server/game/AI/CoreAI/UnitAI.h b/src/server/game/AI/CoreAI/UnitAI.h
+index 3d2eb09c3..ce97e3494 100644
+--- a/src/server/game/AI/CoreAI/UnitAI.h
++++ b/src/server/game/AI/CoreAI/UnitAI.h
+@@ -206,6 +206,9 @@ public:
+     virtual void AttackStart(Unit* /*target*/);    /// @brief Use to start attacking a target. Called just before JustEngagedWith()
+     virtual void UpdateAI(uint32 /*diff*/) = 0;
+ 
++    /// @brief Called a little before UpdateAI to fetch what it reads first. Must not change anything.
++    virtual void PrefetchForUpdate() const {}
++
+     virtual void InitializeAI() { if (!me->isDead()) Reset(); }
+ 
+     virtual void Reset() {};
+diff --git a/src/server/game/AI/SmartScripts/SmartAI.h b/src/server/game/AI/SmartScripts/SmartAI.h
+index bb4b8f6ea..17c14f1fd 100644
+--- a/src/server/game/AI/SmartScripts/SmartAI.h
++++ b/src/server/game/AI/SmartScripts/SmartAI.h
+@@ -76,6 +76,8 @@ public:
+     SmartScript* GetScript() { return &mScript; }
+     bool IsEscortInvokerInRange();
+ 
++    void PrefetchForUpdate() const override { mScript.PrefetchEvents(); }
++
+     // Called when creature is spawned or respawned
+     void JustRespawned() override;
+ 
+diff --git a/src/server/game/AI/SmartScripts/SmartScript.h b/src/server/game/AI/SmartScripts/SmartScript.h
+index 99f39636a..9da15c708 100644
+--- a/src/server/game/AI/SmartScripts/SmartScript.h
++++ b/src/server/game/AI/SmartScripts/SmartScript.h
+@@ -209,6 +209,19 @@ public:
+ 
+     SmartAIEventList const& GetEvents() const { return mEvents; }
+ 
++    // The event's first two 128-byte lines hold what UpdateTimer reads; most scripts have up to two
++    void PrefetchEvents() const
++    {
++        if (mEvents.empty())
++            return;
++
++        char const* events = reinterpret_cast<char const*>(mEvents.data());
++        __builtin_prefetch(events);
++        __builtin_prefetch(events + 128);
++        if (mEvents.size() > 1)
++            __builtin_prefetch(events + 256);
++    }
++
+ private:
+     void IncPhase(uint32 p);
+     void DecPhase(uint32 p);
+diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
+index b52da0fd3..cbbd95e23 100644
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -3760,13 +3760,16 @@ void Unit::_UpdateSpells(uint32 time)
+ 
+     for (size_t i = 0; i < m_auraUpdateSnapshot.size(); ++i)
+     {
+-        // Each aura is a separate heap block, and reading it is the most common stall here
+-        if (i + 1 < m_auraUpdateSnapshot.size())
++        // Each aura is a separate heap block holding pointers to more of them, its effects, and
++        // reading them is the most common stall here. Entries stay valid until _DeleteRemovedAuras.
++        if (i + 2 < m_auraUpdateSnapshot.size())
+         {
+-            char const* next = reinterpret_cast<char const*>(m_auraUpdateSnapshot[i + 1]);
++            char const* next = reinterpret_cast<char const*>(m_auraUpdateSnapshot[i + 2]);
+             __builtin_prefetch(next);
+             __builtin_prefetch(next + 128);
+         }
++        if (i + 1 < m_auraUpdateSnapshot.size())
++            m_auraUpdateSnapshot[i + 1]->PrefetchEffects();
+ 
+         Aura* aura = m_auraUpdateSnapshot[i];
+         if (!aura->IsRemoved())
+diff --git a/src/server/game/Maps/Map.cpp b/src/server/game/Maps/Map.cpp
+index e92849077..557e7eb2e 100644
+--- a/src/server/game/Maps/Map.cpp
++++ b/src/server/game/Maps/Map.cpp
+@@ -35,9 +35,11 @@
+ #include "Object.h"
+ #include "ObjectAccessor.h"
+ #include "ObjectMgr.h"
++#include "MotionMaster.h"
+ #include "Pet.h"
+ #include "PoolMgr.h"
+ #include "ScriptMgr.h"
++#include "SpellAuras.h"
+ #include "TC9Sidecar.h"
+ #include "Transport.h"
+ #include "VMapFactory.h"
+@@ -537,19 +539,88 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+         METRIC_TAG("map_instanceid", std::to_string(GetInstanceId())));
+ }
+ 
++// Fetches each block a creature's update reads first, before its turn. Every block's address is
++// read from the block before it, so the fetches run as stages, one object nearer each time. None
++// of this changes state, and a pointer only read here is one the update itself reads next.
++static inline void PrefetchCreatureBlocks(Creature* creature)
++{
++    if (UnitAI* ai = creature->GetAI())
++        for (uint32 offset : { 0, 256, 384, 512 }) // SmartAI: vtable, event list, script state
++            __builtin_prefetch(reinterpret_cast<char const*>(ai) + offset);
++
++    __builtin_prefetch(creature->movespline);
++    __builtin_prefetch(creature->GetMotionMaster());
++
++    Unit::AuraMap const& auras = creature->GetOwnedAuras();
++    if (!auras.empty())
++        __builtin_prefetch(&*auras.begin());
++
++    Unit::VisibleAuraMap const* visibleAuras = creature->GetVisibleAuras();
++    if (!visibleAuras->empty())
++        __builtin_prefetch(&*visibleAuras->begin());
++}
++
++static inline void PrefetchCreatureTargets(Creature* creature)
++{
++    if (creature->IsAIEnabled)
++        if (UnitAI* ai = creature->GetAI())
++            ai->PrefetchForUpdate();
++
++    MotionMaster const* motionMaster = creature->GetMotionMaster();
++    if (!motionMaster->empty())
++    {
++        char const* generator = reinterpret_cast<char const*>(motionMaster->top());
++        __builtin_prefetch(generator);
++        __builtin_prefetch(generator + 128);
++    }
++
++    Unit::AuraMap const& auras = creature->GetOwnedAuras();
++    if (!auras.empty())
++    {
++        char const* aura = reinterpret_cast<char const*>(auras.begin()->second);
++        __builtin_prefetch(aura);
++        __builtin_prefetch(aura + 128);
++    }
++
++    Unit::VisibleAuraMap const* visibleAuras = creature->GetVisibleAuras();
++    if (!visibleAuras->empty())
++        __builtin_prefetch(visibleAuras->begin()->second);
++}
++
++static inline void PrefetchCreatureAuraEffects(Creature* creature)
++{
++    Unit::AuraMap const& auras = creature->GetOwnedAuras();
++    if (!auras.empty())
++        auras.begin()->second->PrefetchEffects();
++}
++
+ // The list holds pointers to objects scattered across the heap, beyond hardware prefetch.
+-// Offsets are the 128-byte lines of Creature that Update reads most: object header, update
+-// timers, spline and AI pointers, current spells, owned auras and aura masks, visible auras,
+-// motion master. A moved field only makes its prefetch useless. Two objects ahead fetches
+-// the object, so one ahead can read its header for the separate block of update fields.
++// Offsets are the 128-byte lines of Creature that Update reads most: object header, position,
++// update timers, spline and AI pointers, current spells, owned auras and aura masks, visible
++// auras, motion master, unit state, script and respawn fields. A moved field only makes its
++// prefetch useless.
+ static inline void PrefetchForUpdate(std::vector<WorldObject*> const& objects, uint32 i)
+ {
+-    if (i + 2 < objects.size())
+-        for (uint32 offset : { 0, 1152, 1280, 1408, 1536, 2176, 2304 })
+-            __builtin_prefetch(reinterpret_cast<char const*>(objects[i + 2]) + offset);
++    uint32 const size = objects.size();
++
++    if (i + 4 < size)
++        for (uint32 offset : { 0, 512, 1152, 1280, 1408, 1536, 2176, 2304, 2816, 3584, 3712 })
++            __builtin_prefetch(reinterpret_cast<char const*>(objects[i + 4]) + offset);
++
++    if (i + 3 < size)
++    {
++        objects[i + 3]->PrefetchUpdateFields();
++        if (Creature* creature = objects[i + 3]->ToCreature())
++            PrefetchCreatureBlocks(creature);
++    }
++
++    if (i + 2 < size)
++        if (Creature* creature = objects[i + 2]->ToCreature())
++            PrefetchCreatureTargets(creature);
+ 
+-    if (i + 1 < objects.size())
+-        objects[i + 1]->PrefetchUpdateFields();
++    if (i + 1 < size)
++        if (Creature* creature = objects[i + 1]->ToCreature())
++            PrefetchCreatureAuraEffects(creature);
+ }
+ 
+ void Map::UpdateNonPlayerObjects(uint32 const diff)
+diff --git a/src/server/game/Spells/Auras/SpellAuras.cpp b/src/server/game/Spells/Auras/SpellAuras.cpp
+index e74e899f4..e0d636462 100644
+--- a/src/server/game/Spells/Auras/SpellAuras.cpp
++++ b/src/server/game/Spells/Auras/SpellAuras.cpp
+@@ -817,10 +817,6 @@ void Aura::UpdateOwner(uint32 diff, WorldObject* owner)
+         ABORT();
+     }
+ 
+-    // The effects' periodic timers are read below, after the checks in between
+-    for (AuraEffect const* effect : m_effects)
+-        __builtin_prefetch(reinterpret_cast<char const*>(effect) + 64);
+-
+     Unit* caster = GetCaster();
+     // Apply spellmods for channeled auras
+     // used for example when triggered spell of spell:10 is modded
+diff --git a/src/server/game/Spells/Auras/SpellAuras.h b/src/server/game/Spells/Auras/SpellAuras.h
+index eabe20891..6430277c9 100644
+--- a/src/server/game/Spells/Auras/SpellAuras.h
++++ b/src/server/game/Spells/Auras/SpellAuras.h
+@@ -175,6 +175,14 @@ public:
+     bool HasEffect(uint8 effIndex) const { return bool(GetEffect(effIndex)); }
+     bool HasEffectType(AuraType type) const;
+     AuraEffect* GetEffect(uint8 effIndex) const { ASSERT (effIndex < MAX_SPELL_EFFECTS); return m_effects[effIndex]; }
++    void PrefetchEffects() const
++    {
++        for (AuraEffect const* effect : m_effects)
++        {
++            __builtin_prefetch(effect);
++            __builtin_prefetch(reinterpret_cast<char const*>(effect) + 64);
++        }
++    }
+     uint8 GetEffectMask() const { uint8 effMask = 0; for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i) if (m_effects[i]) effMask |= 1 << i; return effMask; }
+     void RecalculateAmountOfEffects();
+     void HandleAllEffects(AuraApplication* aurApp, uint8 mode, bool apply);

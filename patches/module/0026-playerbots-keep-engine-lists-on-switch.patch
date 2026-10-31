@@ -1,0 +1,243 @@
+diff --git a/src/Bot/Engine/Engine.cpp b/src/Bot/Engine/Engine.cpp
+index 368994d..10ceaa8 100644
+--- a/src/Bot/Engine/Engine.cpp
++++ b/src/Bot/Engine/Engine.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include "Engine.h"
+ #include "Action.h"
++#include "CustomStrategy.h"
+ #include "Event.h"
+ #include "PerfMonitor.h"
+ #include "Playerbots.h"
+@@ -13,6 +14,8 @@
+ #include "Strategy.h"
+ #include "Timer.h"
+ 
++#include <atomic>
++
+ Engine::Engine(PlayerbotAI* botAI, AiObjectContext* factory) : PlayerbotAIAware(botAI), aiObjectContext(factory)
+ {
+     lastRelevance = 0.0f;
+@@ -86,16 +89,21 @@ Engine::~Engine(void)
+     strategies.clear();
+ }
+ 
+-void Engine::Reset()
++void Engine::ClearQueue()
+ {
+-    strategyTypeMask = 0;
+-
+     ActionNode* action = nullptr;
+ 
+     while ((action = queue.Pop()) != nullptr)
+     {
+         delete action;
+     }
++}
++
++void Engine::Reset()
++{
++    strategyTypeMask = 0;
++
++    ClearQueue();
+ 
+     for (TriggerNode* trigger : triggers)
+     {
+@@ -119,11 +127,13 @@ void Engine::Init()
+     Reset();
+ 
+     hasTargetExclusions = false;
++    hasCustomStrategy = false;
+     for (std::map<std::string, Strategy*>::iterator i = strategies.begin(); i != strategies.end(); i++)
+     {
+         Strategy* strategy = i->second;
+         strategyTypeMask |= strategy->GetType();
+         hasTargetExclusions |= strategy->HasTargetExclusions();
++        hasCustomStrategy |= dynamic_cast<CustomStrategy*>(strategy) != nullptr;
+         strategy->InitMultipliers(multipliers);
+         strategy->InitTriggers(triggers);
+         for (auto &iter : strategy->actionNodeFactories.creators)
+@@ -138,6 +148,106 @@ void Engine::Init()
+         fprintf(file, "\n");
+         fclose(file);
+     }
++
++    strategiesChanged = false;
++    builtFromInputs = BuildInputs();
++    keptBuilds = 0;
++}
++
++// A state switch must drop the queued actions. The trigger and multiplier lists only change
++// when the strategies or what their Init functions read changed.
++void Engine::EnterState()
++{
++    // A custom strategy's text is edited through a single strategy object, with only the current engine rebuilt
++    if (strategiesChanged || hasCustomStrategy || builtFromInputs != BuildInputs())
++    {
++        Init();
++        return;
++    }
++
++    ClearQueue();
++
++    // Catches an Init function that starts reading something BuildInputs does not cover
++    if (++keptBuilds < KEPT_BUILDS_PER_CHECK)
++        return;
++
++    keptBuilds = 0;
++    if (MatchesFreshBuild())
++        return;
++
++    static std::atomic<bool> warned{false};
++    if (!warned.exchange(true))
++        LOG_ERROR("playerbots", "Engine for bot {} state {} had stale triggers after a state switch; rebuilding, later cases are not logged",
++                  botAI->GetBot()->GetName(), uint32(botAI->GetState()));
++
++    Init();
++}
++
++// Everything the InitTriggers and InitMultipliers functions read besides the strategy list
++uint64 Engine::BuildInputs()
++{
++    Player* bot = botAI->GetBot();
++    if (!bot)
++        return 0;
++
++    auto const mix = [](uint64 value)
++    {
++        value *= 0x9E3779B97F4A7C15ULL;
++        return value ^ (value >> 29);
++    };
++
++    uint8 const spec = bot->GetActiveSpec();
++
++    // Both maps are unordered, so the entries are summed
++    uint64 spells = 0;
++    for (auto const& [spellId, spell] : bot->GetSpellMap())
++        if (spell->State != PLAYERSPELL_REMOVED && spell->IsInSpec(spec))
++            spells += mix(spellId + 1);
++
++    // The spec tab counts talents pending removal and HasTalent does not, so that state is an input too
++    uint64 talents = 0;
++    for (auto const& [spellId, talent] : bot->GetTalentMap())
++        if (talent->IsInSpec(spec))
++            talents += mix(uint64(spellId) << 1 | uint64(talent->State == PLAYERSPELL_REMOVED));
++
++    uint64 const flags = uint64(bot->GetLevel()) | uint64(spec) << 8 | uint64(botAI->HasCheat(BotCheatMask::food)) << 16 |
++                         uint64(sPlayerbotAIConfig.RandomBotEmote) << 17 | uint64(sPlayerbotAIConfig.RandomBotTalk) << 18 |
++                         uint64(sPlayerbotAIConfig.EnableGreet) << 19;
++
++    return mix(spells) ^ mix(talents + 1) ^ mix(flags + 2);
++}
++
++bool Engine::MatchesFreshBuild()
++{
++    std::vector<TriggerNode*> freshTriggers;
++    std::vector<Multiplier*> freshMultipliers;
++    for (auto const& [name, strategy] : strategies)
++    {
++        strategy->InitMultipliers(freshMultipliers);
++        strategy->InitTriggers(freshTriggers);
++    }
++
++    bool matches = freshTriggers.size() == triggers.size() && freshMultipliers.size() == multipliers.size();
++
++    for (size_t i = 0; matches && i < triggers.size(); ++i)
++    {
++        std::vector<NextAction> kept = triggers[i]->getOwnHandlers();
++        std::vector<NextAction> fresh = freshTriggers[i]->getOwnHandlers();
++        matches = triggers[i]->getName() == freshTriggers[i]->getName() && kept.size() == fresh.size();
++        for (size_t j = 0; matches && j < kept.size(); ++j)
++            matches = kept[j].getName() == fresh[j].getName() && kept[j].getRelevance() == fresh[j].getRelevance();
++    }
++
++    for (size_t i = 0; matches && i < multipliers.size(); ++i)
++        matches = multipliers[i]->getName() == freshMultipliers[i]->getName();
++
++    for (TriggerNode* trigger : freshTriggers)
++        delete trigger;
++
++    for (Multiplier* multiplier : freshMultipliers)
++        delete multiplier;
++
++    return matches;
+ }
+ 
+ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
+@@ -371,6 +481,7 @@ void Engine::addStrategy(std::string const name, bool init)
+ 
+         LogAction("S:+%s", strategy->getName().c_str());
+         strategies[strategy->getName()] = strategy;
++        strategiesChanged = true;
+     }
+     if (init)
+         Init();
+@@ -422,6 +533,7 @@ bool Engine::removeStrategy(std::string const name, bool init)
+ 
+     LogAction("S:-%s", name.c_str());
+     strategies.erase(i);
++    strategiesChanged = true;
+     if (init)
+         Init();
+ 
+diff --git a/src/Bot/Engine/Engine.h b/src/Bot/Engine/Engine.h
+index 36d26ca..10bbf07 100644
+--- a/src/Bot/Engine/Engine.h
++++ b/src/Bot/Engine/Engine.h
+@@ -65,6 +65,7 @@ public:
+     Engine(PlayerbotAI* botAI, AiObjectContext* factory);
+ 
+     virtual void Init();
++    void EnterState();
+     void addStrategy(std::string const name, bool init = true);
+     void addStrategies(std::string first, ...);
+     void addStrategiesNoInit(std::string first, ...);
+@@ -106,6 +107,9 @@ protected:
+     bool MultiplyAndPush(std::vector<NextAction> actions, float forceRelevance, bool skipPrerequisites, Event event,
+                          char const* pushType);
+     void Reset();
++    void ClearQueue();
++    uint64 BuildInputs();
++    bool MatchesFreshBuild();
+     void ProcessTriggers(bool minimal);
+     void PushAgain(ActionNode* actionNode, float relevance, Event event);
+     virtual Action* InitializeAction(ActionNode* actionNode);
+@@ -120,6 +124,12 @@ protected:
+     std::string lastAction;
+     uint32 strategyTypeMask;
+     bool hasTargetExclusions = false;
++    bool hasCustomStrategy = false;
++    bool strategiesChanged = true;
++    uint64 builtFromInputs = 0;
++    // About one check every 5 s across 1000 bots at the measured 12 switches per second
++    static constexpr uint32 KEPT_BUILDS_PER_CHECK = 64;
++    uint32 keptBuilds = 0;
+     NamedObjectFactoryList<ActionNode> actionNodeFactories;
+ };
+ 
+diff --git a/src/Bot/Engine/Trigger/Trigger.h b/src/Bot/Engine/Trigger/Trigger.h
+index 9c13976..4885783 100644
+--- a/src/Bot/Engine/Trigger/Trigger.h
++++ b/src/Bot/Engine/Trigger/Trigger.h
+@@ -58,6 +58,7 @@ public:
+     Trigger* getTrigger() { return trigger; }
+     void setTrigger(Trigger* trigger) { this->trigger = trigger; }
+     const std::string getName() { return name; }
++    std::vector<NextAction> const& getOwnHandlers() const { return handlers; }
+ 
+     std::vector<NextAction> getHandlers()
+     {
+diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
+index 03843ac..e0b2ceb 100644
+--- a/src/Bot/PlayerbotAI.cpp
++++ b/src/Bot/PlayerbotAI.cpp
+@@ -1544,7 +1544,7 @@ void PlayerbotAI::ChangeEngine(BotState type)
+     {
+         currentEngine = engine;
+         currentState = type;
+-        ReInitCurrentEngine();
++        currentEngine->EnterState();
+ 
+         switch (type)
+         {

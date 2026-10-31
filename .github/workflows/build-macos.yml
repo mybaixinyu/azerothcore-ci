@@ -20,6 +20,10 @@ on:
         description: 'Build with ThinLTO'
         type: boolean
         default: true
+      pgo_generate:
+        description: 'Instrument for a PGO training run instead of using pgo/worldserver.profdata'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -34,7 +38,7 @@ jobs:
       CCACHE_COMPRESS: 'true'
       VARIANT: ${{ inputs.tsan && '-tsan' || '' }}
       LTO_FLAG: ${{ inputs.lto && '-flto=thin' || '' }}
-      CCACHE_KEY: xcode-27${{ inputs.tsan && '-tsan' || '' }}${{ inputs.lto && '-lto' || '' }}
+      CCACHE_KEY: xcode-27${{ inputs.tsan && '-tsan' || '' }}${{ inputs.lto && '-lto' || '' }}${{ inputs.pgo_generate && '-pgen' || '' }}
 
     steps:
       - name: Checkout CI repo
@@ -95,13 +99,19 @@ jobs:
       # TSan reports need line numbers, so that variant also carries debug info.
       - name: Configure
         run: |
+          pgo_flag=
+          if [ "${{ inputs.pgo_generate }}" = true ]; then
+            pgo_flag=-fprofile-generate
+          elif [ -f "$GITHUB_WORKSPACE/ci/pgo/worldserver.profdata" ]; then
+            pgo_flag="-fprofile-use=$GITHUB_WORKSPACE/ci/pgo/worldserver.profdata"
+          fi
           cmake -S src -B build -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DCMAKE_BUILD_TYPE=${{ inputs.tsan && 'RelWithDebInfo' || 'Release' }} \
             -DTSAN=${{ inputs.tsan && 'ON' || 'OFF' }} \
-            -DCMAKE_C_FLAGS="$LTO_FLAG" \
-            -DCMAKE_CXX_FLAGS="$LTO_FLAG" \
-            -DCMAKE_EXE_LINKER_FLAGS="$LTO_FLAG" \
+            -DCMAKE_C_FLAGS="$LTO_FLAG $pgo_flag" \
+            -DCMAKE_CXX_FLAGS="$LTO_FLAG $pgo_flag" \
+            -DCMAKE_EXE_LINKER_FLAGS="$LTO_FLAG $pgo_flag" \
             -DAPPS_BUILD=all \
             -DTOOLS_BUILD=none \
             -DSCRIPTS=static \
@@ -203,6 +213,8 @@ jobs:
             echo "ci_commit=$(git -C ci rev-parse HEAD)"
             echo "tsan=${{ inputs.tsan }}"
             echo "lto=${{ inputs.lto }}"
+            echo "pgo_generate=${{ inputs.pgo_generate }}"
+            [ -f ci/pgo/worldserver.profdata ] && echo "pgo_profile=$(shasum -a 256 ci/pgo/worldserver.profdata | cut -d' ' -f1)"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"
             done

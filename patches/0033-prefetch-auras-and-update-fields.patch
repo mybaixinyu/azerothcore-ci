@@ -1,0 +1,106 @@
+diff --git a/src/server/game/Entities/Object/Object.h b/src/server/game/Entities/Object/Object.h
+index 58a0714..a837c94 100644
+--- a/src/server/game/Entities/Object/Object.h
++++ b/src/server/game/Entities/Object/Object.h
+@@ -145,6 +145,15 @@ public:
+     virtual void DestroyForPlayer(Player* target, bool onDeath = false) const;
+ 
+     [[nodiscard]] int32 GetInt32Value(uint16 index) const;
++    // First three 128-byte lines: health, flags, faction, charm and owner guids, combat reach
++    void PrefetchUpdateFields() const
++    {
++        char const* fields = reinterpret_cast<char const*>(m_uint32Values);
++        __builtin_prefetch(fields);
++        __builtin_prefetch(fields + 128);
++        __builtin_prefetch(fields + 256);
++    }
++
+     [[nodiscard]] uint32 GetUInt32Value(uint16 index) const;
+     [[nodiscard]] uint64 GetUInt64Value(uint16 index) const;
+     [[nodiscard]] float GetFloatValue(uint16 index) const;
+diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
+index 74c8344..dee2673 100644
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ -3758,9 +3758,20 @@ void Unit::_UpdateSpells(uint32 time)
+     for (auto& [id, aura] : m_ownedAuras)
+         m_auraUpdateSnapshot.push_back(aura);
+ 
+-    for (Aura* aura : m_auraUpdateSnapshot)
++    for (size_t i = 0; i < m_auraUpdateSnapshot.size(); ++i)
++    {
++        // Each aura is a separate heap block, and reading it is the most common stall here
++        if (i + 1 < m_auraUpdateSnapshot.size())
++        {
++            char const* next = reinterpret_cast<char const*>(m_auraUpdateSnapshot[i + 1]);
++            __builtin_prefetch(next);
++            __builtin_prefetch(next + 128);
++        }
++
++        Aura* aura = m_auraUpdateSnapshot[i];
+         if (!aura->IsRemoved())
+             aura->UpdateOwner(time, this);
++    }
+ 
+     // remove expired auras - do that after updates(used in scripts?)
+     for (AuraMap::iterator i = m_ownedAuras.begin(); i != m_ownedAuras.end();)
+diff --git a/src/server/game/Maps/Map.cpp b/src/server/game/Maps/Map.cpp
+index 5874fa8..e928490 100644
+--- a/src/server/game/Maps/Map.cpp
++++ b/src/server/game/Maps/Map.cpp
+@@ -540,11 +540,16 @@ void Map::Update(const uint32 t_diff, const uint32 s_diff, bool  /*thread*/)
+ // The list holds pointers to objects scattered across the heap, beyond hardware prefetch.
+ // Offsets are the 128-byte lines of Creature that Update reads most: object header, update
+ // timers, spline and AI pointers, current spells, owned auras and aura masks, visible auras,
+-// motion master. A moved field only makes its prefetch useless.
+-static inline void PrefetchForUpdate(WorldObject const* obj)
++// motion master. A moved field only makes its prefetch useless. Two objects ahead fetches
++// the object, so one ahead can read its header for the separate block of update fields.
++static inline void PrefetchForUpdate(std::vector<WorldObject*> const& objects, uint32 i)
+ {
+-    for (uint32 offset : { 0, 1152, 1280, 1408, 1536, 2176, 2304 })
+-        __builtin_prefetch(reinterpret_cast<char const*>(obj) + offset);
++    if (i + 2 < objects.size())
++        for (uint32 offset : { 0, 1152, 1280, 1408, 1536, 2176, 2304 })
++            __builtin_prefetch(reinterpret_cast<char const*>(objects[i + 2]) + offset);
++
++    if (i + 1 < objects.size())
++        objects[i + 1]->PrefetchUpdateFields();
+ }
+ 
+ void Map::UpdateNonPlayerObjects(uint32 const diff)
+@@ -557,8 +562,7 @@ void Map::UpdateNonPlayerObjects(uint32 const diff)
+     {
+         for (uint32 i = 0; i < _updatableObjectList.size();)
+         {
+-            if (i + 1 < _updatableObjectList.size())
+-                PrefetchForUpdate(_updatableObjectList[i + 1]);
++            PrefetchForUpdate(_updatableObjectList, i);
+ 
+             WorldObject* obj = _updatableObjectList[i];
+             if (!obj->IsInWorld())
+@@ -584,8 +588,7 @@ void Map::UpdateNonPlayerObjects(uint32 const diff)
+     {
+         for (uint32 i = 0; i < _updatableObjectList.size(); ++i)
+         {
+-            if (i + 1 < _updatableObjectList.size())
+-                PrefetchForUpdate(_updatableObjectList[i + 1]);
++            PrefetchForUpdate(_updatableObjectList, i);
+ 
+             WorldObject* obj = _updatableObjectList[i];
+             if (!obj->IsInWorld())
+diff --git a/src/server/game/Spells/Auras/SpellAuras.cpp b/src/server/game/Spells/Auras/SpellAuras.cpp
+index e0d6364..e74e899 100644
+--- a/src/server/game/Spells/Auras/SpellAuras.cpp
++++ b/src/server/game/Spells/Auras/SpellAuras.cpp
+@@ -817,6 +817,10 @@ void Aura::UpdateOwner(uint32 diff, WorldObject* owner)
+         ABORT();
+     }
+ 
++    // The effects' periodic timers are read below, after the checks in between
++    for (AuraEffect const* effect : m_effects)
++        __builtin_prefetch(reinterpret_cast<char const*>(effect) + 64);
++
+     Unit* caster = GetCaster();
+     // Apply spellmods for channeled auras
+     // used for example when triggered spell of spell:10 is modded

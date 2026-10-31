@@ -1,0 +1,26 @@
+diff --git a/src/server/game/Spells/Auras/SpellAuras.cpp b/src/server/game/Spells/Auras/SpellAuras.cpp
+index c309ee3..e0d6364 100644
+--- a/src/server/game/Spells/Auras/SpellAuras.cpp
++++ b/src/server/game/Spells/Auras/SpellAuras.cpp
+@@ -589,6 +589,21 @@ void Aura::UpdateTargetMap(Unit* caster, bool apply)
+ 
+     m_updateTargetMapInterval = UPDATE_TARGET_MAP_INTERVAL;
+ 
++    // Most auras sit on their owner alone and this runs twice a second for each of them.
++    // When the one application already matches, the code below would register, remove and
++    // apply nothing, so skip building the target map and its allocations.
++    if (GetType() == UNIT_AURA_TYPE && m_applications.size() == 1 && !IsArea() && m_spellInfo->GetSpellSpecific() != SPELL_SPECIFIC_AURA)
++    {
++        uint8 ownerEffMask = 0;
++        for (uint8 effIndex = 0; effIndex < MAX_SPELL_EFFECTS; ++effIndex)
++            if (HasEffect(effIndex) && GetSpellInfo()->Effects[effIndex].Effect == SPELL_EFFECT_APPLY_AURA)
++                ownerEffMask |= 1 << effIndex;
++
++        AuraApplication const* app = m_applications.begin()->second;
++        if (ownerEffMask && app->GetTarget() == GetUnitOwner() && app->GetEffectMask() == ownerEffMask && CanBeAppliedOn(app->GetTarget()))
++            return;
++    }
++
+     // fill up to date target list
+     //       target, effMask
+     std::map<Unit*, uint8> targets;

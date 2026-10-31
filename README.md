@@ -53,8 +53,15 @@ files into `etc/` — the live configs are left alone.
 ### ThinLTO
 
 Builds use ThinLTO by default (`-f lto=false` turns it off) and fail if an object file is not bitcode. Measured
-at 1000 bots on 2026-10-31: about 15% fewer instructions and 6 to 11% less CPU time. A build from a cold cache
-took about 38 minutes against 37 without it.
+at 1000 bots on 2026-10-31: about 15% fewer instructions and 6 to 11% less CPU time. Two builds of the same
+sources run side by side took 38 minutes with it, on an empty cache, and 37 without it, on an old one.
+
+### PGO
+
+A build uses `pgo/worldserver.profdata` when that file exists. To make one: dispatch with `-f pgo_generate=true`,
+install that run, start `worldserver` with `LLVM_PROFILE_FILE` set and let it run under load, stop it cleanly (the
+profile is written at exit), then `xcrun llvm-profdata merge -o pgo/worldserver.profdata <raw files>`. A source change
+only loses the profile for the functions it changes.
 
 ### ThreadSanitizer build
 
@@ -172,6 +179,21 @@ build instead of being silently skipped.
 - `0030-map-update-prefetch-next-object.patch` — `Map::UpdateNonPlayerObjects` walks pointers to objects scattered far
   beyond hardware prefetch (79% of address gaps exceed 64 MiB). It now prefetches the next object's hot 128-byte
   lines, taken from a field-level profile and the layout after 0027.
+- `0031-aura-target-map-owner-fast-path.patch` — `Aura::UpdateTargetMap` runs twice a second for every aura and built a
+  `std::map` and a `std::list` each time, about 8% of `Map::Update` at 1000 bots. For a unit aura with no area effect,
+  one application on its owner, a matching effect mask and `CanBeAppliedOn` true, the rest of the function registers,
+  removes and applies nothing, so it now returns there. Paladin auras keep the full path for their dominance check.
+- `0032-ai-relocation-skip-out-of-sight-pairs.patch` — `AIRelocationNotifier` is about 20% of `Map::Update`. It walks every
+  creature in the visited cells, a far larger square than a creature can see, and ran all of `CanSeeOrDetect` for each pair
+  in both directions, with the distance test near the end. Creature pairs beyond sight range are now skipped first, and
+  the walk prefetches the next creature's position. Sight adds the target's size: the moving unit's is read, 10 yards
+  allows for the other's (121 of 24,143 models are larger), and creatures with a longer sight range keep the full check.
+  Behavior change: a moving creature no longer "sees" a huge one past that bound, or an always-visible one (such as its
+  own pet) beyond it. Players are not filtered.
+- `0033-prefetch-auras-and-update-fields.patch` — single loads that miss the cache led the profile after 0030: `IsRemoved` on
+  the next aura (4.6% of `Map::Update`) and `m_periodicTimer` on its effects (3.9%). `_UpdateSpells` and
+  `Aura::UpdateOwner` now prefetch them. The map update prefetches two objects ahead, so it can read the next object's
+  pointer to its separate block of update fields and prefetch that as well.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

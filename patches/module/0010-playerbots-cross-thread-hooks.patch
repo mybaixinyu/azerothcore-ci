@@ -1,5 +1,5 @@
 diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
-index b3c0873..1c2d7ea 100644
+index 9f9c267..4efaafb 100644
 --- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
 +++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
 @@ -84,8 +84,10 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
@@ -99,7 +99,7 @@ index 63029c1..e5fb89e 100644
              request = "";
          }
 diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
-index f1f2048..34d5660 100644
+index f3c8ebd..5abb75a 100644
 --- a/src/Bot/PlayerbotAI.cpp
 +++ b/src/Bot/PlayerbotAI.cpp
 @@ -38,6 +38,7 @@
@@ -110,7 +110,7 @@ index f1f2048..34d5660 100644
  #include "Playerbots.h"
  #include "PositionValue.h"
  #include "RBAC.h"
-@@ -94,10 +95,17 @@ void PacketHandlingHelper::AddHandler(uint16 opcode, std::string const handler)
+@@ -95,10 +96,17 @@ void PacketHandlingHelper::AddHandler(uint16 opcode, std::string const handler)
  
  void PacketHandlingHelper::Handle(ExternalEventHelper& helper)
  {
@@ -131,7 +131,7 @@ index f1f2048..34d5660 100644
  
          helper.HandlePacket(handlers, packet);
      }
-@@ -111,7 +119,10 @@ void PacketHandlingHelper::AddPacket(WorldPacket const& packet)
+@@ -112,7 +120,10 @@ void PacketHandlingHelper::AddPacket(WorldPacket const& packet)
      // assert(packet);
      // assert(packet.GetOpcode());
      if (handlers.find(packet.GetOpcode()) != handlers.end())
@@ -142,7 +142,7 @@ index f1f2048..34d5660 100644
  }
  
  PlayerbotAI::PlayerbotAI()
-@@ -260,6 +271,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
+@@ -261,6 +272,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
          bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
          return;
  
@@ -151,7 +151,7 @@ index f1f2048..34d5660 100644
      // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
      // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
      if (!bot->Unit::IsFalling())
-@@ -1253,122 +1266,18 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
+@@ -1260,122 +1273,18 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
          }
          case SMSG_MESSAGECHAT:  // do not react to self or if not ready to reply
          {
@@ -282,7 +282,7 @@ index f1f2048..34d5660 100644
              return;
          }
          case SMSG_FORCE_MOVE_ROOT:      // CMSG_FORCE_MOVE_ROOT_ACK
-@@ -1476,6 +1385,137 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
+@@ -1483,6 +1392,137 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
      }
  }
  
@@ -421,7 +421,7 @@ index f1f2048..34d5660 100644
  {
      for (uint8 type = CURRENT_MELEE_SPELL; type <= CURRENT_CHANNELED_SPELL; type++)
 diff --git a/src/Bot/PlayerbotAI.h b/src/Bot/PlayerbotAI.h
-index da22f6e..ee27a26 100644
+index 4c0ff8f..10030e1 100644
 --- a/src/Bot/PlayerbotAI.h
 +++ b/src/Bot/PlayerbotAI.h
 @@ -24,6 +24,7 @@
@@ -430,9 +430,9 @@ index da22f6e..ee27a26 100644
  #include "WorldPacket.h"
 +#include <mutex>
  #include <stack>
+ #include <unordered_set>
  
- class Action;
-@@ -360,6 +361,8 @@ public:
+@@ -361,6 +362,8 @@ public:
  private:
      std::map<uint16, std::string> handlers;
      std::stack<WorldPacket> queue;
@@ -441,7 +441,7 @@ index da22f6e..ee27a26 100644
  };
  
  class ChatCommandHolder
-@@ -496,6 +499,8 @@ public:
+@@ -498,6 +501,8 @@ public:
      bool Whisper(std::string const& msg, std::string const& receiverName);
  
      void SpellInterrupted(uint32 spellid);
@@ -450,7 +450,7 @@ index da22f6e..ee27a26 100644
      int32 CalculateGlobalCooldown(uint32 spellid);
      void RequestSpellInterrupt();
      void RemoveAura(std::string const name);
-@@ -656,6 +661,9 @@ protected:
+@@ -664,6 +669,9 @@ protected:
      ChatHelper chatHelper;
      std::list<ChatCommandHolder> chatCommands;
      std::list<ChatQueuedReply> chatReplies;
@@ -505,7 +505,7 @@ index 0d599cc..dce3d57 100644
          LOG_DEBUG("playerbots", "Bot {} logging out", bot->GetName().c_str());
  
 diff --git a/src/Script/Playerbots.cpp b/src/Script/Playerbots.cpp
-index 57dfce3..673b036 100644
+index fed4e7c..92e6510 100644
 --- a/src/Script/Playerbots.cpp
 +++ b/src/Script/Playerbots.cpp
 @@ -24,6 +24,7 @@

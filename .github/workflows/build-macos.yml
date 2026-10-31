@@ -214,7 +214,7 @@ jobs:
             echo "tsan=${{ inputs.tsan }}"
             echo "lto=${{ inputs.lto }}"
             echo "pgo_generate=${{ inputs.pgo_generate }}"
-            [ -f ci/pgo/worldserver.profdata ] && echo "pgo_profile=$(shasum -a 256 ci/pgo/worldserver.profdata | cut -d' ' -f1)"
+            [ "${{ inputs.pgo_generate }}" != true ] && [ -f ci/pgo/worldserver.profdata ] && echo "pgo_profile=$(shasum -a 256 ci/pgo/worldserver.profdata | cut -d' ' -f1)"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"
             done

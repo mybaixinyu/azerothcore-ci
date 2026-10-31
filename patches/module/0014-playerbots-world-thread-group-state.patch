@@ -1,5 +1,5 @@
 diff --git a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
-index 58f019c..83dd16b 100644
+index cad9e71..2e50ac3 100644
 --- a/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
 +++ b/src/Ai/Base/Actions/BattleGroundJoinAction.cpp
 @@ -12,6 +12,8 @@
@@ -11,7 +11,7 @@ index 58f019c..83dd16b 100644
  #include "PlayerbotWorldThreadProcessor.h"
  #include "Playerbots.h"
  #include "PositionValue.h"
-@@ -43,6 +45,21 @@ bool BGJoinAction::Execute(Event /*event*/)
+@@ -44,6 +46,21 @@ bool BGJoinAction::Execute(Event /*event*/)
              if (i != ratedList.end())
                  isRated = true;
  
@@ -33,7 +33,7 @@ index 58f019c..83dd16b 100644
              if (isRated && !gatherArenaTeam(type))
                  return false;
  
-@@ -58,6 +75,20 @@ bool BGJoinAction::Execute(Event /*event*/)
+@@ -59,6 +76,20 @@ bool BGJoinAction::Execute(Event /*event*/)
      return JoinQueue(queueType);
  }
  
@@ -160,7 +160,7 @@ index e97466a..a8e9fc5 100644
  
      botAI->TellMaster(out);
 diff --git a/src/Ai/Base/Actions/LootRollAction.cpp b/src/Ai/Base/Actions/LootRollAction.cpp
-index fdfc913..5bf85e4 100644
+index bcc2a31..2180a60 100644
 --- a/src/Ai/Base/Actions/LootRollAction.cpp
 +++ b/src/Ai/Base/Actions/LootRollAction.cpp
 @@ -11,8 +11,42 @@
@@ -1414,18 +1414,18 @@ index 0000000..9fd2962
 +
 +#endif
 diff --git a/src/Util/EncounterHelpers.cpp b/src/Util/EncounterHelpers.cpp
-index 964d3ad..2b54ac1 100644
+index 0cddc20..916a623 100644
 --- a/src/Util/EncounterHelpers.cpp
 +++ b/src/Util/EncounterHelpers.cpp
-@@ -17,6 +17,7 @@
- #include "InstanceScript.h"
- #include "MageActions.h"
+@@ -20,6 +20,7 @@
+ #include "ObjectAccessor.h"
  #include "PaladinActions.h"
+ #include "PlayerbotTextMgr.h"
 +#include "PlayerbotWorldThread.h"
  #include "Playerbots.h"
  #include "RogueActions.h"
  #include "RtiTargetValue.h"
-@@ -162,7 +163,7 @@ bool MarkTargetWithIcon(Player* bot, Unit* target, uint8 iconId)
+@@ -165,7 +166,7 @@ bool MarkTargetWithIcon(Player* bot, Unit* target, uint8 iconId)
      ObjectGuid currentGuid = group->GetTargetIcon(iconId);
      if (currentGuid != target->GetGUID())
      {
@@ -1434,7 +1434,7 @@ index 964d3ad..2b54ac1 100644
          return true;
      }
  
-@@ -220,7 +221,7 @@ bool ClearTargetIcon(Player* bot, uint8 iconId)
+@@ -222,7 +223,7 @@ bool ClearTargetIcon(Player* bot, uint8 iconId)
      ObjectGuid currentGuid = group->GetTargetIcon(iconId);
      if (currentGuid != ObjectGuid::Empty)
      {

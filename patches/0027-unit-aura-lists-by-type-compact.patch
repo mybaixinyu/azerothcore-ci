@@ -1,5 +1,5 @@
 diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
-index ce188c5..74c8344 100644
+index 089620e..90fd0af 100644
 --- a/src/server/game/Entities/Unit/Unit.cpp
 +++ b/src/server/game/Entities/Unit/Unit.cpp
 @@ -4731,9 +4731,73 @@ void Unit::_RemoveNoStackAurasDueToAura(Aura* aura, bool owned)
@@ -129,8 +129,8 @@ index ce188c5..74c8344 100644
                      continue;
                  }
                  // used for glyph of scourge strike
-@@ -15868,7 +15934,8 @@ private:
- void Unit::CastDelayedSpellWithPeriodicAmount(Unit* caster, uint32 spellId, AuraType auraType, int32 addAmount, uint8 effectIndex)
+@@ -15890,7 +15956,8 @@ void Unit::CastDelayedSpellWithPeriodicAmount(Unit* caster, uint32 spellId, Aura
+     uint8 effectIndex, TriggerCastFlags extraTriggerFlags)
  {
      AuraEffect* aurEff = nullptr;
 -    for (AuraEffectList::iterator i = m_modAuras[auraType].begin(); i != m_modAuras[auraType].end(); ++i)
@@ -140,7 +140,7 @@ index ce188c5..74c8344 100644
          aurEff = *i;
          if (aurEff->GetCasterGUID() != caster->GetGUID() || aurEff->GetId() != spellId || aurEff->GetEffIndex() != effectIndex || !aurEff->GetTotalTicks())
 diff --git a/src/server/game/Entities/Unit/Unit.h b/src/server/game/Entities/Unit/Unit.h
-index cdff5aa..34848bc 100644
+index f268a9c..2efcdb1 100644
 --- a/src/server/game/Entities/Unit/Unit.h
 +++ b/src/server/game/Entities/Unit/Unit.h
 @@ -31,6 +31,7 @@
@@ -160,7 +160,7 @@ index cdff5aa..34848bc 100644
      AuraList&       GetSingleCastAuras()       { return m_scAuras; }
      [[nodiscard]] AuraList const& GetSingleCastAuras() const { return m_scAuras; }
  
-@@ -2177,7 +2178,46 @@ protected:
+@@ -2178,7 +2179,46 @@ protected:
      std::vector<Aura*> m_auraUpdateSnapshot; // _UpdateSpells scratch buffer
      uint32 m_removedAurasCount;
  

@@ -1,8 +1,8 @@
 diff --git a/src/Mgr/Travel/TravelMgr.cpp b/src/Mgr/Travel/TravelMgr.cpp
-index f3d1094..de80998 100644
+index 72bd2ff..984b659 100644
 --- a/src/Mgr/Travel/TravelMgr.cpp
 +++ b/src/Mgr/Travel/TravelMgr.cpp
-@@ -66,6 +66,15 @@ static Capital const* FindCapitalByBanker(uint16 bankerEntry)
+@@ -68,6 +68,15 @@ static Capital const* FindCapitalByBanker(uint16 bankerEntry)
      return nullptr;
  }
  
@@ -18,7 +18,7 @@ index f3d1094..de80998 100644
  static int GetCityWeight(uint32 zoneId)
  {
      switch (zoneId)
-@@ -4499,9 +4508,8 @@ const std::vector<WorldLocation> TravelMgr::GetTeleportLocations(Player* bot)
+@@ -4506,9 +4515,8 @@ const std::vector<WorldLocation> TravelMgr::GetTeleportLocations(Player* bot)
  
  const std::vector<WorldLocation> TravelMgr::GetTravelHubs(Player* bot)
  {
@@ -30,7 +30,7 @@ index f3d1094..de80998 100644
      return locs;
  }
  
-@@ -4510,7 +4518,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
+@@ -4517,7 +4525,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
      uint32 level = bot->GetLevel();
  
      std::vector<WorldLocation> fallbackLocations;
@@ -39,7 +39,7 @@ index f3d1094..de80998 100644
          fallbackLocations.push_back(bLoc.loc);
  
      if (!sPlayerbotAIConfig.EnableWeightTeleToCityBankers)
-@@ -4518,7 +4526,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
+@@ -4525,7 +4533,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
  
      TeamId botTeamId = bot->GetTeamId();
      std::unordered_set<uint32> validBankerCities;
@@ -49,11 +49,11 @@ index f3d1094..de80998 100644
          Capital const* capital = FindCapitalByBanker(loc.entry);
          if (!capital)
 diff --git a/src/Mgr/Travel/TravelMgr.h b/src/Mgr/Travel/TravelMgr.h
-index db6c4fa..a14be5c 100644
+index 875cb1f..113cb5b 100644
 --- a/src/Mgr/Travel/TravelMgr.h
 +++ b/src/Mgr/Travel/TravelMgr.h
-@@ -881,7 +881,12 @@ public:
-     std::vector<WorldLocation> GetCityLocations(Player* bot);
+@@ -885,7 +885,12 @@ public:
+     std::vector<WorldLocation> GetValidQuestGiverLocations(Player* bot);
      std::vector<uint32> GetFlightNodesInZone(uint32 zoneId, TeamId team, uint32 excludeNode = 0) const;
      bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
 -    std::vector<WorldLocation> const& GetLocsPerLevelCache(uint8 level) { return locsPerLevelCache[level]; }

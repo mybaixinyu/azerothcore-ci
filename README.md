@@ -278,13 +278,13 @@ build instead of being silently skipped.
   instead of `operator[]`, which inserted missing keys. The guild cache is written by
   randomization on map threads and is left to the randomization change.
 - `module/0013-playerbots-raid-state-lock.patch` — fifth part, the encounter helpers of
-  Karazhan, Hyjal, Magtheridon, Tempest Keep, Black Temple, Zul'Aman, Ulduar and Ruby
-  Sanctum, which keep per-instance state in 38 unlocked tables shared by every instance
-  of the raid. Each of those raids gets a recursive mutex, held for a bot's whole AI update
-  on that raid's map and by the three spell listener scripts that write the tables, so
-  the 189 places that use them are unchanged. Two instances of the same raid now take
-  turns; nothing else ever waits. ICC, SSC, Naxxramas and the Ruby Sanctum instance state
-  already had locks and are untouched.
+  Karazhan, Black Temple, Ulduar and Ruby Sanctum, which keep per-instance state in unlocked
+  tables shared by every instance of the raid. Each of those raids gets a recursive mutex,
+  held for a bot's whole AI update on that raid's map, so the places that use them are
+  unchanged. Two instances of the same raid now take turns; nothing else ever waits.
+  ICC, SSC, Naxxramas, Gruul and the Ruby Sanctum instance state have locks of their own.
+  Hyjal, Magtheridon, Tempest Keep and Zul'Aman left this patch when mod-playerbots #2943 moved
+  their tables into one locked per-instance state struct.
 - `module/0014-playerbots-world-thread-group-state.patch` — sixth part, the group, guild and mail
   changes the AI made directly on its map thread rather than through a packet. Raid target icons (96 calls in the
   raid and dungeon strategies), the Razorscale main-tank flags, loot roll votes, guild bank deposits, gathering a

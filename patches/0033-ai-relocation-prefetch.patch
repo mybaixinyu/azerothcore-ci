@@ -1,0 +1,24 @@
+diff --git a/src/server/game/Grids/Notifiers/GridNotifiers.cpp b/src/server/game/Grids/Notifiers/GridNotifiers.cpp
+index e38c803..b40b99b 100644
+--- a/src/server/game/Grids/Notifiers/GridNotifiers.cpp
++++ b/src/server/game/Grids/Notifiers/GridNotifiers.cpp
+@@ -177,6 +177,19 @@ void AIRelocationNotifier::Visit(CreatureMapType& m)
+     {
+         Creature* c = iter->GetSource();
+ 
++        // This walk chases a pointer per creature and then misses on each field the checks read, one
++        // after another. Fetch them side by side: the next creature's 128-byte lines from its address
++        // alone (header, position, visibility, phase and notify flags, AI state, sight, LOS flags),
++        // and for this one, whose header arrived by now, the two blocks its header points to.
++        char const* nextRef = reinterpret_cast<char const*>(iter->nocheck_next());
++        char const* next = nextRef + (reinterpret_cast<char const*>(c) - reinterpret_cast<char const*>(&*iter));
++        __builtin_prefetch(nextRef);
++        for (uint32 offset : { 0, 128, 256, 512, 1152, 1280, 3456, 3584 })
++            __builtin_prefetch(next + offset);
++
++        c->PrefetchUpdateFields();
++        __builtin_prefetch(c->AI());
++
+         // NOTIFY_VISIBILITY_CHANGED | NOTIFY_AI_RELOCATION does not guarantee that unit will do it itself (because distance is also checked), but screw it, it's not that important
+         if (!c->isNeedNotify(NOTIFY_VISIBILITY_CHANGED | NOTIFY_AI_RELOCATION) && !c->IsMoveInLineOfSightStrictlyDisabled())
+             CreatureUnitRelocationWorker(c, &i_unit);

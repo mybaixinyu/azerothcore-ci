@@ -183,17 +183,15 @@ build instead of being silently skipped.
   `std::map` and a `std::list` each time, about 8% of `Map::Update` at 1000 bots. For a unit aura with no area effect,
   one application on its owner, a matching effect mask and `CanBeAppliedOn` true, the rest of the function registers,
   removes and applies nothing, so it now returns there. Paladin auras keep the full path for their dominance check.
-- `0032-ai-relocation-skip-out-of-sight-pairs.patch` — `AIRelocationNotifier` is about 20% of `Map::Update`. It walks every
-  creature in the visited cells, a far larger square than a creature can see, and ran all of `CanSeeOrDetect` for each pair
-  in both directions, with the distance test near the end. Creature pairs beyond sight range are now skipped first, and
-  the walk prefetches the next creature's position. Sight adds the target's size: the moving unit's is read, 10 yards
-  allows for the other's (121 of 24,143 models are larger), and creatures with a longer sight range keep the full check.
-  Behavior change: a moving creature no longer "sees" a huge one past that bound, or an always-visible one (such as its
-  own pet) beyond it. Players are not filtered.
-- `0033-prefetch-auras-and-update-fields.patch` — single loads that miss the cache led the profile after 0030: `IsRemoved` on
+- `0032-prefetch-auras-and-update-fields.patch` — single loads that miss the cache led the profile after 0030: `IsRemoved` on
   the next aura (4.6% of `Map::Update`) and `m_periodicTimer` on its effects (3.9%). `_UpdateSpells` and
   `Aura::UpdateOwner` now prefetch them. The map update prefetches two objects ahead, so it can read the next object's
   pointer to its separate block of update fields and prefetch that as well.
+- `0033-ai-relocation-prefetch.patch` — `AIRelocationNotifier` is about 20% of `Map::Update`, walking every creature in the
+  visited cells and missing on each field its checks read in turn. The walk now fetches those lines of the next creature
+  side by side, and for the current one the update fields and AI object its header points to. No check changes. Rejected:
+  skipping pairs beyond sight range first. A bound that does not read the target's size, or skip the always-visible and
+  `CanSeeAlways` tests that precede the distance test, changes who sees whom, and an exact form still pays for those reads.
 - `module/0003-playerbots-water-breathing.patch` — a bot that is under water without a
   water-breathing aura casts spell 5697 (Unending Breath) on itself, so bots that
   follow their master into deep water no longer drown. Touches the module

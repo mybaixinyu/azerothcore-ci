@@ -1,0 +1,56 @@
+diff --git a/src/server/game/Movement/MovementGenerators/PathGenerator.h b/src/server/game/Movement/MovementGenerators/PathGenerator.h
+index a2390152b..5065889a3 100644
+--- a/src/server/game/Movement/MovementGenerators/PathGenerator.h
++++ b/src/server/game/Movement/MovementGenerators/PathGenerator.h
+@@ -139,6 +139,14 @@ class PathGenerator
+             return len;
+         }
+ 
++        [[nodiscard]] uint16 GetFilterIncludeFlags() const { return _filter.getIncludeFlags(); }
++        [[nodiscard]] uint16 GetFilterExcludeFlags() const { return _filter.getExcludeFlags(); }
++        void SetFilterFlags(uint16 includeFlags, uint16 excludeFlags)
++        {
++            _filter.setIncludeFlags(includeFlags);
++            _filter.setExcludeFlags(excludeFlags);
++        }
++
+         void Clear()
+         {
+             _polyLength = 0;
+diff --git a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp
+index 0d35c51e9..bd589b210 100644
+--- a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp
++++ b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.cpp
+@@ -147,8 +147,18 @@ void RandomMovementGenerator<Creature>::_setRandomLocation(Creature* creature)
+         }
+         else // ground
+         {
++            // The generator is built per path, but its filter lives as long as this movement: built on the
++            // first path, and CalculatePath adds to it what the creature stood in, such as water.
+             PathGenerator pathGenerator(creature);
++            if (_pathFilterSaved)
++                pathGenerator.SetFilterFlags(_pathIncludeFlags, _pathExcludeFlags);
++
+             bool result = pathGenerator.CalculatePath(x, y, levelZ, false);
++
++            _pathIncludeFlags = pathGenerator.GetFilterIncludeFlags();
++            _pathExcludeFlags = pathGenerator.GetFilterExcludeFlags();
++            _pathFilterSaved = true;
++
+             if (result && !(pathGenerator.GetPathType() & PATHFIND_NOPATH))
+             {
+                 // generated path is too long
+diff --git a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h
+index 25a998bbe..f4ab32a24 100644
+--- a/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h
++++ b/src/server/game/Movement/MovementGenerators/RandomMovementGenerator.h
+@@ -74,6 +74,9 @@ private:
+     float _wanderDistance;
+     std::vector<G3D::Vector3> _destinationPoints;
+     PointList _validPoints[RANDOM_POINTS_NUMBER + 1];
++    uint16 _pathIncludeFlags = 0;
++    uint16 _pathExcludeFlags = 0;
++    bool _pathFilterSaved = false;
+     uint8 _currentPoint;
+     std::map<uint16, Movement::PointsArray> _preComputedPaths;
+     Position _initialPosition, _currDestPosition;

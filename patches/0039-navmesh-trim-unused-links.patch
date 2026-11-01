@@ -1,0 +1,81 @@
+diff --git a/src/common/Collision/Management/MMapMgr.cpp b/src/common/Collision/Management/MMapMgr.cpp
+index 9944995e4..04374607b 100644
+--- a/src/common/Collision/Management/MMapMgr.cpp
++++ b/src/common/Collision/Management/MMapMgr.cpp
+@@ -15,6 +15,7 @@
+  * with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "DetourCommon.h"
+ #include "MMapMgr.h"
+ #include "Config.h"
+ #include "Errors.h"
+@@ -23,6 +24,53 @@
+ 
+ namespace MMAP
+ {
++    // Returns the number of link slots a tile can ever use. A wall edge reserves a slot in maxLinkCount but never takes a link; a portal edge takes up to 4 (findConnectingPolys, maxcon 4 in connectExtLinks).
++    static int TightLinkCount(dtMeshHeader const* header, dtPoly const* polys)
++    {
++        int internalEdges = 0, portalEdges = 0;
++        for (int i = 0; i < header->polyCount; ++i)
++            for (int j = 0; j < polys[i].vertCount; ++j)
++            {
++                if (polys[i].neis[j] & DT_EXT_LINK)
++                    ++portalEdges;
++                else if (polys[i].neis[j])
++                    ++internalEdges;
++            }
++        return dtMin(header->maxLinkCount, dtMax(1, internalEdges + portalEdges * 4));
++    }
++
++    // Moves a tile to a smaller buffer without its never-used link slots. Returns false, leaving the tile as read, when it does not have the expected layout or holds off-mesh connections.
++    static bool TrimTileLinks(unsigned char*& data, int& dataSize)
++    {
++        if (dataSize < int(sizeof(dtMeshHeader)))
++            return false;
++        dtMeshHeader* header = (dtMeshHeader*)data;
++        if (header->magic != DT_NAVMESH_MAGIC || header->version != DT_NAVMESH_VERSION || header->offMeshConCount)
++            return false;
++        int const headEnd = dtAlign4(sizeof(dtMeshHeader)) + dtAlign4(sizeof(float) * 3 * header->vertCount) + dtAlign4(sizeof(dtPoly) * header->polyCount);
++        int const linksSize = dtAlign4(sizeof(dtLink) * header->maxLinkCount);
++        int const tailSize = dtAlign4(sizeof(dtPolyDetail) * header->detailMeshCount) + dtAlign4(sizeof(float) * 3 * header->detailVertCount) + dtAlign4(4 * header->detailTriCount) + dtAlign4(sizeof(dtBVNode) * header->bvNodeCount);
++        if (headEnd + linksSize + tailSize != dataSize)
++            return false;
++        dtPoly const* polys = (dtPoly const*)(data + dtAlign4(sizeof(dtMeshHeader)) + dtAlign4(sizeof(float) * 3 * header->vertCount));
++        int const tightCount = TightLinkCount(header, polys);
++        int const tightSize = dtAlign4(sizeof(dtLink) * tightCount);
++        if (tightSize == linksSize)
++            return false;
++        int const newSize = headEnd + tightSize + tailSize;
++        unsigned char* trimmed = (unsigned char*)dtAlloc(newSize, DT_ALLOC_PERM);
++        if (!trimmed)
++            return false;
++        memcpy(trimmed, data, headEnd);
++        memset(trimmed + headEnd, 0, tightSize);
++        memcpy(trimmed + headEnd + tightSize, data + headEnd + linksSize, tailSize);
++        ((dtMeshHeader*)trimmed)->maxLinkCount = tightCount;
++        dtFree(data);
++        data = trimmed;
++        dataSize = newSize;
++        return true;
++    }
++
+     // ######################## MMapMgr ########################
+     std::shared_ptr<dtNavMesh> MMapMgr::LoadNavMesh(uint32 mapId)
+     {
+@@ -106,10 +154,13 @@ namespace MMAP
+ 
+         fclose(file);
+ 
++        int dataSize = fileHeader.size;
++        TrimTileLinks(data, dataSize);
++
+         dtTileRef tileRef = 0;
+ 
+         // memory allocated for data is now managed by detour, and will be deallocated when the tile is removed
+-        if (dtStatusSucceed(navMesh->addTile(data, fileHeader.size, DT_TILE_FREE_DATA, 0, &tileRef)))
++        if (dtStatusSucceed(navMesh->addTile(data, dataSize, DT_TILE_FREE_DATA, 0, &tileRef)))
+         {
+             dtMeshHeader* header = (dtMeshHeader*)data;
+             LOG_DEBUG("maps", "MMAP:loadMap: Loaded mmtile {:03}[{:02},{:02}] into {:03}[{:02},{:02}]", mapId, x, y, mapId, header->x, header->y);

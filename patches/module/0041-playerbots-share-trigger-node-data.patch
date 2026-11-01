@@ -1,0 +1,116 @@
+diff --git a/src/Bot/Engine/Action/Action.h b/src/Bot/Engine/Action/Action.h
+index 02db2ce2..e19a0d3e 100644
+--- a/src/Bot/Engine/Action/Action.h
++++ b/src/Bot/Engine/Action/Action.h
+@@ -20,8 +20,8 @@ public:
+     NextAction(std::string const name, float relevance = 0.0f)
+         : relevance(relevance), name(name) {}  // name after relevance - whipowill
+ 
+-    std::string const getName() { return name; }
+-    float getRelevance() { return relevance; }
++    std::string const getName() const { return name; }
++    float getRelevance() const { return relevance; }
+ 
+     static std::vector<NextAction> merge(std::vector<NextAction> const& what, std::vector<NextAction> const& with)
+     {
+diff --git a/src/Bot/Engine/Trigger/Trigger.cpp b/src/Bot/Engine/Trigger/Trigger.cpp
+index 7e28b708..0b326605 100644
+--- a/src/Bot/Engine/Trigger/Trigger.cpp
++++ b/src/Bot/Engine/Trigger/Trigger.cpp
+@@ -9,6 +9,40 @@
+ #include "Event.h"
+ #include "PlayerbotAI.h"
+ 
++#include <memory>
++#include <mutex>
++#include <shared_mutex>
++#include <unordered_map>
++
++TriggerNode::Shared const* TriggerNode::Intern(std::string const& name, std::vector<NextAction> handlers)
++{
++    static std::shared_mutex lock;
++    static std::unordered_map<std::string, std::unique_ptr<Shared const>> pool;
++
++    std::string key = name;
++    for (NextAction const& action : handlers)
++    {
++        key += '\0';
++        key += action.getName();
++        key += '\0';
++        float const relevance = action.getRelevance();
++        key.append(reinterpret_cast<char const*>(&relevance), sizeof(relevance));
++    }
++
++    {
++        std::shared_lock<std::shared_mutex> reader(lock);
++        auto const itr = pool.find(key);
++        if (itr != pool.end())
++            return itr->second.get();
++    }
++
++    std::unique_lock<std::shared_mutex> writer(lock);
++    std::unique_ptr<Shared const>& entry = pool[std::move(key)];
++    if (!entry)
++        entry = std::make_unique<Shared const>(Shared{name, std::move(handlers)});
++    return entry.get();
++}
++
+ Trigger::Trigger(PlayerbotAI* botAI, std::string const name, int32 checkInterval)
+     : AiNamedObject(botAI, name),
+       checkInterval(checkInterval == 1 ? 1 : (checkInterval < 100 ? checkInterval * IN_MILLISECONDS : checkInterval)),
+diff --git a/src/Bot/Engine/Trigger/Trigger.h b/src/Bot/Engine/Trigger/Trigger.h
+index 4885783b..f2f21e46 100644
+--- a/src/Bot/Engine/Trigger/Trigger.h
++++ b/src/Bot/Engine/Trigger/Trigger.h
+@@ -51,18 +51,17 @@ public:
+         std::vector<NextAction> handlers = {}
+     ) :
+     trigger(nullptr),
+-    handlers(std::move(handlers)),
+-    name(name)
++    shared(Intern(name, std::move(handlers)))
+     {}
+ 
+     Trigger* getTrigger() { return trigger; }
+     void setTrigger(Trigger* trigger) { this->trigger = trigger; }
+-    const std::string getName() { return name; }
+-    std::vector<NextAction> const& getOwnHandlers() const { return handlers; }
++    const std::string getName() { return shared->name; }
++    std::vector<NextAction> const& getOwnHandlers() const { return shared->handlers; }
+ 
+     std::vector<NextAction> getHandlers()
+     {
+-        std::vector<NextAction> result = this->handlers;
++        std::vector<NextAction> result = shared->handlers;
+ 
+         if (trigger != nullptr)
+         {
+@@ -75,16 +74,24 @@ public:
+ 
+     float getFirstRelevance()
+     {
+-        if (this->handlers.size() > 0)
+-            return this->handlers[0].getRelevance();
++        if (shared->handlers.size() > 0)
++            return shared->handlers[0].getRelevance();
+ 
+         return -1;
+     }
+ 
+ private:
++    // Immutable, and repeated per engine per bot; one copy is kept per distinct name and handler list.
++    struct Shared
++    {
++        std::string name;
++        std::vector<NextAction> handlers;
++    };
++
++    static Shared const* Intern(std::string const& name, std::vector<NextAction> handlers);
++
+     Trigger* trigger;
+-    std::vector<NextAction> handlers;
+-    const std::string name;
++    Shared const* shared;
+ };
+ 
+ #endif

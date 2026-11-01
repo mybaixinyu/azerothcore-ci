@@ -1,0 +1,255 @@
+diff --git a/src/common/Collision/BoundingIntervalHierarchy.h b/src/common/Collision/BoundingIntervalHierarchy.h
+index 7d9eb0227..7ca9ac2cb 100644
+--- a/src/common/Collision/BoundingIntervalHierarchy.h
++++ b/src/common/Collision/BoundingIntervalHierarchy.h
+@@ -116,7 +116,15 @@ public:
+         delete[] dat.primBound;
+         delete[] dat.indices;
+     }
+-    [[nodiscard]] uint32 primCount() const { return objects.size(); }
++    [[nodiscard]] uint32 primCount() const { return directObjects ? directCount : objects.size(); }
++    [[nodiscard]] std::vector<uint32> const& objectOrder() const { return objects; }
++    //! The caller has stored its primitives in objects[] order, so a leaf's index is its own position.
++    void dropObjectOrder()
++    {
++        directCount = objects.size();
++        std::vector<uint32>().swap(objects);
++        directObjects = true;
++    }
+     G3D::AABox const& bound() const { return bounds; }
+ 
+     template<typename RayCallback>
+@@ -235,7 +243,7 @@ public:
+                         int n = tree[node + 1];
+                         while (n > 0)
+                         {
+-                            bool hit = intersectCallback(r, objects[offset], maxDist, stopAtFirstHit);
++                            bool hit = intersectCallback(r, directObjects ? uint32(offset) : objects[offset], maxDist, stopAtFirstHit);
+                             if (stopAtFirstHit && hit) { return; }
+                             --n;
+                             ++offset;
+@@ -339,7 +347,7 @@ public:
+                         int n = tree[node + 1];
+                         while (n > 0)
+                         {
+-                            intersectCallback(p, objects[offset]); // !!!
++                            intersectCallback(p, directObjects ? uint32(offset) : objects[offset]); // !!!
+                             --n;
+                             ++offset;
+                         }
+@@ -380,6 +388,8 @@ public:
+ protected:
+     std::vector<uint32> tree;
+     std::vector<uint32> objects;
++    uint32 directCount{0};
++    bool directObjects{false};
+     G3D::AABox bounds;
+ 
+     struct buildData
+diff --git a/src/common/Collision/Management/WorldModelStore.cpp b/src/common/Collision/Management/WorldModelStore.cpp
+index af78a01d5..63c993f55 100644
+--- a/src/common/Collision/Management/WorldModelStore.cpp
++++ b/src/common/Collision/Management/WorldModelStore.cpp
+@@ -36,6 +36,9 @@ std::shared_ptr<VMAP::WorldModel> WorldModelStore::AcquireModelInstance(std::str
+ 
+         worldmodel->Flags = flags;
+ 
++        if (_compactModels)
++            worldmodel->CompactForQueries();
++
+         model = _loadedModels.insert(std::pair<std::string, std::shared_ptr<VMAP::WorldModel>>(filename, worldmodel)).first;
+     }
+ 
+diff --git a/src/common/Collision/Management/WorldModelStore.h b/src/common/Collision/Management/WorldModelStore.h
+index a175e0d1f..74f5a0e3f 100644
+--- a/src/common/Collision/Management/WorldModelStore.h
++++ b/src/common/Collision/Management/WorldModelStore.h
+@@ -34,11 +34,15 @@ public:
+ 
+     std::shared_ptr<VMAP::WorldModel> AcquireModelInstance(std::string const& basepath, std::string const& filename, uint32 flags);
+ 
++    //! Set by the server, which only queries models. The map tools read the mesh back in file order and leave this off.
++    void SetCompactModels(bool compact) { _compactModels = compact; }
++
+ private:
+     typedef std::unordered_map<std::string, std::shared_ptr<VMAP::WorldModel>> ModelFileMap;
+     ModelFileMap _loadedModels;
+ 
+     std::mutex _lock;
++    bool _compactModels{false};
+ };
+ 
+ #define sWorldModelStore WorldModelStore::instance()
+diff --git a/src/common/Collision/Models/WorldModel.cpp b/src/common/Collision/Models/WorldModel.cpp
+index fc2079e11..cab06b98a 100644
+--- a/src/common/Collision/Models/WorldModel.cpp
++++ b/src/common/Collision/Models/WorldModel.cpp
+@@ -31,7 +31,8 @@ template<> struct BoundsTrait<VMAP::GroupModel>
+ 
+ namespace VMAP
+ {
+-    bool IntersectTriangle(MeshTriangle const& tri, std::vector<Vector3>::const_iterator points, G3D::Ray const& ray, float& distance)
++    template<typename Triangle>
++    bool IntersectTriangle(Triangle const& tri, std::vector<Vector3>::const_iterator points, G3D::Ray const& ray, float& distance)
+     {
+         static const float EPS = 1e-5f;
+ 
+@@ -313,7 +314,7 @@ namespace VMAP
+ 
+     GroupModel::GroupModel(GroupModel const& other):
+         iBound(other.iBound), iMogpFlags(other.iMogpFlags), iGroupWMOID(other.iGroupWMOID),
+-        vertices(other.vertices), triangles(other.triangles), meshTree(other.meshTree), iLiquid(0)
++        vertices(other.vertices), triangles(other.triangles), compactTriangles(other.compactTriangles), meshTree(other.meshTree), iLiquid(0)
+     {
+         if (other.iLiquid)
+         {
+@@ -424,9 +425,10 @@ namespace VMAP
+         return result;
+     }
+ 
++    template<typename Triangle>
+     struct GModelRayCallback
+     {
+-        GModelRayCallback(std::vector<MeshTriangle> const& tris, std::vector<Vector3> const& vert):
++        GModelRayCallback(std::vector<Triangle> const& tris, std::vector<Vector3> const& vert):
+             vertices(vert.begin()), triangles(tris.begin()), hit(false) { }
+         bool operator()(G3D::Ray const& ray, uint32 entry, float& distance, bool /*StopAtFirstHit*/)
+         {
+@@ -435,18 +437,49 @@ namespace VMAP
+             return hit;
+         }
+         std::vector<Vector3>::const_iterator vertices;
+-        std::vector<MeshTriangle>::const_iterator triangles;
++        typename std::vector<Triangle>::const_iterator triangles;
+         bool hit;
+     };
+ 
++    void GroupModel::CompactForQueries()
++    {
++        std::vector<uint32> const& order = meshTree.objectOrder();
++        if (triangles.empty() || order.size() != triangles.size() || vertices.size() > 65536)
++            return;
++
++        std::vector<CompactTriangle> compact(order.size());
++        for (std::size_t i = 0; i < order.size(); ++i)
++        {
++            if (order[i] >= triangles.size())
++                return;
++
++            MeshTriangle const& tri = triangles[order[i]];
++            if (tri.idx0 > 0xFFFF || tri.idx1 > 0xFFFF || tri.idx2 > 0xFFFF)
++                return;
++
++            compact[i] = { uint16(tri.idx0), uint16(tri.idx1), uint16(tri.idx2) };
++        }
++
++        compactTriangles.swap(compact);
++        std::vector<MeshTriangle>().swap(triangles);
++        meshTree.dropObjectOrder();
++    }
++
+     bool GroupModel::IntersectRay(G3D::Ray const& ray, float& distance, bool stopAtFirstHit) const
+     {
++        if (!compactTriangles.empty())
++        {
++            GModelRayCallback<CompactTriangle> callback(compactTriangles, vertices);
++            meshTree.intersectRay(ray, callback, distance, stopAtFirstHit);
++            return callback.hit;
++        }
++
+         if (triangles.empty())
+         {
+             return false;
+         }
+ 
+-        GModelRayCallback callback(triangles, vertices);
++        GModelRayCallback<MeshTriangle> callback(triangles, vertices);
+         meshTree.intersectRay(ray, callback, distance, stopAtFirstHit);
+         return callback.hit;
+     }
+@@ -462,7 +495,7 @@ namespace VMAP
+ 
+     GroupModel::InsideResult GroupModel::IsInsideObject(G3D::Ray const& ray, float& z_dist) const
+     {
+-        if (triangles.empty() || !IsInsideOrAboveBound(iBound, ray.origin()))
++        if ((triangles.empty() && compactTriangles.empty()) || !IsInsideOrAboveBound(iBound, ray.origin()))
+             return OUT_OF_BOUNDS;
+ 
+         if (meshTree.bound().high().z >= ray.origin().z)
+@@ -520,6 +553,12 @@ namespace VMAP
+ 
+     // ===================== WorldModel ==================================
+ 
++    void WorldModel::CompactForQueries()
++    {
++        for (GroupModel& group : groupModels)
++            group.CompactForQueries();
++    }
++
+     void WorldModel::setGroupModels(std::vector<GroupModel>& models)
+     {
+         groupModels.swap(models);
+diff --git a/src/common/Collision/Models/WorldModel.h b/src/common/Collision/Models/WorldModel.h
+index 8f532ec8f..b01dbe44b 100644
+--- a/src/common/Collision/Models/WorldModel.h
++++ b/src/common/Collision/Models/WorldModel.h
+@@ -43,6 +43,14 @@ namespace VMAP
+         uint32 idx2{0};
+     };
+ 
++    //! Query-time form of MeshTriangle: no group has 65536 vertices, so half the size.
++    struct CompactTriangle
++    {
++        uint16 idx0;
++        uint16 idx1;
++        uint16 idx2;
++    };
++
+     class WmoLiquid
+     {
+     public:
+@@ -93,12 +101,15 @@ namespace VMAP
+         [[nodiscard]] uint32 GetMogpFlags() const { return iMogpFlags; }
+         [[nodiscard]] uint32 GetWmoID() const { return iGroupWMOID; }
+         void GetMeshData(std::vector<G3D::Vector3>& outVertices, std::vector<MeshTriangle>& outTriangles, WmoLiquid*& liquid);
++        //! Rewrites loaded triangles for queries only: 16-bit indices in BIH leaf order, without the BIH's index array. Query results are unchanged.
++        void CompactForQueries();
+     protected:
+         G3D::AABox iBound;
+         uint32 iMogpFlags{0};// 0x8 outdor; 0x2000 indoor
+         uint32 iGroupWMOID{0};
+         std::vector<G3D::Vector3> vertices;
+         std::vector<MeshTriangle> triangles;
++        std::vector<CompactTriangle> compactTriangles;
+         BIH meshTree;
+         WmoLiquid* iLiquid{nullptr};
+     };
+@@ -116,6 +127,7 @@ namespace VMAP
+         bool writeFile(std::string const& filename);
+         bool readFile(std::string const& filename);
+         void GetGroupModels(std::vector<GroupModel>& outGroupModels);
++        void CompactForQueries();
+         uint32 Flags;
+     protected:
+         uint32 RootWMOID{0};
+diff --git a/src/server/game/World/World.cpp b/src/server/game/World/World.cpp
+index d77f52b85..edfcbd8fa 100644
+--- a/src/server/game/World/World.cpp
++++ b/src/server/game/World/World.cpp
+@@ -96,6 +96,7 @@
+ #include "WeatherMgr.h"
+ #include "WhoListCacheMgr.h"
+ #include "WorldGlobals.h"
++#include "WorldModelStore.h"
+ #include "WorldPacket.h"
+ #include "WorldSession.h"
+ #include "WorldSessionMgr.h"
+@@ -294,6 +295,8 @@ void World::LoadConfigSettings(bool reload)
+     if (!enableHeight)
+         LOG_ERROR("server.loading", "VMap height checking disabled! Creatures movements and other various things WILL be broken! Expect no support.");
+ 
++    if (!reload)
++        sWorldModelStore->SetCompactModels(true);
+     VMAP::VMapFactory::createOrGetVMapMgr()->setEnableLineOfSightCalc(enableLOS);
+     VMAP::VMapFactory::createOrGetVMapMgr()->setEnableHeightCalc(enableHeight);
+     LOG_INFO("server.loading", "WORLD: VMap support included. LineOfSight:{}, getHeight:{}, indoorCheck:{} PetLOS:{}", enableLOS, enableHeight, enableIndoor, enablePetLOS);

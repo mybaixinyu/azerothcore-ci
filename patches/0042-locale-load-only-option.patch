@@ -1,0 +1,67 @@
+diff --git a/src/server/apps/worldserver/worldserver.conf.dist b/src/server/apps/worldserver/worldserver.conf.dist
+index 94e787747..36fc963d1 100644
+--- a/src/server/apps/worldserver/worldserver.conf.dist
++++ b/src/server/apps/worldserver/worldserver.conf.dist
+@@ -983,6 +983,17 @@ RealmZone = 1
+ 
+ DBC.Locale = 255
+ 
++#
++#    Locale.LoadOnly
++#        Description: Comma-separated database locales to keep in memory (enUS is always kept),
++#                     for example "zhCN". The other locales are read at startup and dropped.
++#                     Clients of a dropped locale see English text, and chat links carrying a
++#                     name in a dropped locale can fail link validation. An unknown locale
++#                     name logs an error and keeps all locales. Needs a restart to change.
++#        Default:     "" - (Keep all locales)
++
++Locale.LoadOnly = ""
++
+ #
+ #    Expansion
+ #        Description: Allow server to use content from expansions. Checks for expansion-related
+diff --git a/src/server/game/Globals/ObjectMgr.cpp b/src/server/game/Globals/ObjectMgr.cpp
+index 1c76aa1bd..cb49c9073 100644
+--- a/src/server/game/Globals/ObjectMgr.cpp
++++ b/src/server/game/Globals/ObjectMgr.cpp
+@@ -380,9 +380,39 @@ ObjectMgr* ObjectMgr::instance()
+     return &instance;
+ }
+ 
++// Locales named by Locale.LoadOnly plus enUS; every locale when it is empty or names an unknown locale.
++static uint32 GetLoadedLocaleMask()
++{
++    uint32 const allLocales = (1u << TOTAL_LOCALES) - 1;
++    std::string const names = sConfigMgr->GetOption<std::string>("Locale.LoadOnly", "");
++    if (names.empty())
++        return allLocales;
++
++    uint32 mask = 1u << LOCALE_enUS;
++    for (std::string_view name : Acore::Tokenize(names, ',', false))
++    {
++        uint32 i = 0;
++        while (i < TOTAL_LOCALES && !(localeNames[i] && name == localeNames[i]))
++            ++i;
++
++        if (i == TOTAL_LOCALES)
++        {
++            LOG_ERROR("server.loading", "Locale.LoadOnly names unknown locale '{}', keeping all locales in memory.", name);
++            return allLocales;
++        }
++
++        mask |= 1u << i;
++    }
++
++    LOG_INFO("server.loading", "Locale.LoadOnly = {}: other locales are not kept in memory.", names);
++    return mask;
++}
++
+ void ObjectMgr::AddLocaleString(std::string&& s, LocaleConstant locale, std::vector<std::string>& data)
+ {
+-    if (!s.empty())
++    static uint32 const loadedLocales = GetLoadedLocaleMask();
++
++    if (!s.empty() && (loadedLocales & (1u << locale)))
+     {
+         if (data.size() <= std::size_t(locale))
+             data.resize(locale + 1);

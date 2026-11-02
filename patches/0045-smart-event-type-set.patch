@@ -1,0 +1,74 @@
+diff --git a/src/server/game/AI/SmartScripts/SmartScript.cpp b/src/server/game/AI/SmartScripts/SmartScript.cpp
+index daf0a0b9f..f7de37cec 100644
+--- a/src/server/game/AI/SmartScripts/SmartScript.cpp
++++ b/src/server/game/AI/SmartScripts/SmartScript.cpp
+@@ -156,6 +156,10 @@ void SmartScript::OnReset()
+ 
+ void SmartScript::ProcessEventsFor(SMART_EVENT e, Unit* unit, uint32 var0, uint32 var1, bool bvar, SpellInfo const* spell, GameObject* gob)
+ {
++    // No event of this type in the list: the loop below would match nothing
++    if (!mEventTypesIncomplete && uint32(e) < mEventTypes.size() && !mEventTypes.test(uint32(e)))
++        return;
++
+     for (SmartAIEventList::iterator i = mEvents.begin(); i != mEvents.end(); ++i)
+     {
+         SMART_EVENT eventType = SMART_EVENT((*i).GetEventType());
+@@ -5263,7 +5267,7 @@ void SmartScript::InstallEvents()
+     if (!mInstallEvents.empty())
+     {
+         for (SmartAIEventList::iterator i = mInstallEvents.begin(); i != mInstallEvents.end(); ++i)
+-            mEvents.push_back(*i);//must be before UpdateTimers
++            AppendEvent(*i);//must be before UpdateTimers
+ 
+         mInstallEvents.clear();
+     }
+@@ -5390,12 +5394,12 @@ void SmartScript::FillScript(SmartAIEventList e, WorldObject* obj, AreaTrigger c
+             {
+                 if ((1 << (obj->GetMap()->GetSpawnMode() + 1)) & (*i).event.event_flags)
+                 {
+-                    mEvents.push_back((*i));
++                    AppendEvent(*i);
+                 }
+             }
+             continue;
+         }
+-        mEvents.push_back((*i));//NOTE: 'world(0)' events still get processed in ANY instance mode
++        AppendEvent(*i);//NOTE: 'world(0)' events still get processed in ANY instance mode
+     }
+ }
+ 
+diff --git a/src/server/game/AI/SmartScripts/SmartScript.h b/src/server/game/AI/SmartScripts/SmartScript.h
+index 9da15c708..30c30590f 100644
+--- a/src/server/game/AI/SmartScripts/SmartScript.h
++++ b/src/server/game/AI/SmartScripts/SmartScript.h
+@@ -23,6 +23,7 @@
+ #include "SmartScriptMgr.h"
+ #include "Spell.h"
+ #include "Unit.h"
++#include <bitset>
+ #include <vector>
+ 
+ class SmartScript
+@@ -232,7 +233,22 @@ private:
+     void RaisePriority(SmartScriptHolder& e);
+     void RetryLater(SmartScriptHolder& e, bool ignoreChanceRoll = false);
+ 
++    // The only writer of mEvents (CI checks this): keeps mEventTypes, the set of event types the list holds, so
++    // ProcessEventsFor can return at once for a type the script does not have. Elements are never removed and an
++    // element's type never changes once added, so the set stays exact.
++    void AppendEvent(SmartScriptHolder const& e)
++    {
++        mEvents.push_back(e); // 0045-sole-writer
++        uint32 type = e.GetEventType();
++        if (type < mEventTypes.size())
++            mEventTypes.set(type);
++        else
++            mEventTypesIncomplete = true;
++    }
++
+     SmartAIEventList mEvents;
++    std::bitset<256> mEventTypes;
++    bool mEventTypesIncomplete = false;
+     SmartAIEventList mInstallEvents;
+     SmartAIEventList mTimedActionList;
+     bool isProcessingTimedActionList;

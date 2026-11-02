@@ -80,6 +80,7 @@ jobs:
             echo "== $p"
             git -C src/modules/mod-playerbots apply --verbose "$p"
           done
+          bash "$GITHUB_WORKSPACE"/ci/scripts/check-0045.sh src
 
       - name: Install dependencies
         run: |

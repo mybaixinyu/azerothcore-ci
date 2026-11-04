@@ -165,6 +165,11 @@ jobs:
           ln -s "$GITHUB_WORKSPACE/stage$PREFIX" "$GITHUB_WORKSPACE/out"
           test -f "$GITHUB_WORKSPACE/out/bin/worldserver"
 
+      # Sanitizer builds compile without the pool (SmallBlockPool.h), so they have no SystemNew to check.
+      - name: Check 0043's one system allocation call
+        if: ${{ !inputs.tsan }}
+        run: bash "$GITHUB_WORKSPACE"/ci/scripts/check-0043.sh "$GITHUB_WORKSPACE/out/bin/worldserver"
+
       - name: Bundle dylibs
         run: ci/scripts/bundle-dylibs.sh "$GITHUB_WORKSPACE/out/bin"
 

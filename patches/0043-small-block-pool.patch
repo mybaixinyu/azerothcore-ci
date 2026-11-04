@@ -36,10 +36,10 @@ index 0c61448dd..c97c655ad 100644
              World::StopNow(SHUTDOWN_EXIT_CODE);
 diff --git a/src/server/apps/worldserver/SmallBlockPool.cpp b/src/server/apps/worldserver/SmallBlockPool.cpp
 new file mode 100644
-index 000000000..da1bb3633
+index 000000000..1b8dc4ec5
 --- /dev/null
 +++ b/src/server/apps/worldserver/SmallBlockPool.cpp
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,525 @@
 +/*
 + * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
 + *
@@ -70,6 +70,11 @@ index 000000000..da1bb3633
 +// Aging follows sync.Pool: blocks idle for a whole epoch move from thread cache to shared list to cold state,
 +// and a slab whose blocks are all cold goes back to the system. A slab with one live block stays, but its
 +// free blocks are reused before any new slab is carved.
++//
++// Everything the pool does not serve goes to malloc from the single call in SystemNew. xzone malloc derives an
++// untyped allocation's type from its caller's return address and keeps each type's blocks in its own bucket, so
++// the same object made at two call sites, a creature at grid load and at respawn, lands in two buckets, and the
++// slots a dead grid creature leaves are only reused by later grid loads. One call site makes one type per size.
 +//
 +// AC_SMALL_BLOCK_POOL=0 in the environment turns the pool off, for example for MallocStackLogging, since
 +// the system allocator's tools do not see pool blocks. The region shows in vmmap with VM tag 240.
@@ -460,7 +465,8 @@ index 000000000..da1bb3633
 +        return true;
 +    }
 +
-+    void* SystemNew(size_t size)
++    // Never inlined, and malloc is not its tail call: the one return address malloc sees is in here.
++    __attribute__((noinline)) void* SystemNew(size_t size)
 +    {
 +        for (;;)
 +        {

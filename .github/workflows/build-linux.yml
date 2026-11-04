@@ -1,0 +1,167 @@
+name: build-linux
+
+# A Linux build of the same sources and patches, for measuring glibc malloc on this patch set; it is not installed
+# anywhere. arm64 so it runs natively in a local container. Built against Ubuntu 24.04's packages (glibc 2.39), the
+# image it runs in, so nothing is bundled.
+on:
+  push:
+    branches: [linux-build]
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: 'mod-playerbots/azerothcore-wotlk ref'
+        default: 'Playerbot'
+      module_ref:
+        description: 'mod-playerbots/mod-playerbots ref'
+        default: 'master'
+      bridge_ref:
+        description: 'Aldori15/mod-questie-bridge ref'
+        default: 'main'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    env:
+      PREFIX: /opt/azerothcore-pb
+      CORE_REF: ${{ inputs.core_ref || 'Playerbot' }}
+      MODULE_REF: ${{ inputs.module_ref || 'master' }}
+      BRIDGE_REF: ${{ inputs.bridge_ref || 'main' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPRESS: 'true'
+
+    steps:
+      - name: Checkout CI repo
+        uses: actions/checkout@v7
+        with:
+          path: ci
+
+      - name: Checkout core
+        uses: actions/checkout@v7
+        with:
+          repository: mod-playerbots/azerothcore-wotlk
+          ref: ${{ env.CORE_REF }}
+          path: src
+
+      - name: Checkout playerbots module
+        uses: actions/checkout@v7
+        with:
+          repository: mod-playerbots/mod-playerbots
+          ref: ${{ env.MODULE_REF }}
+          path: src/modules/mod-playerbots
+
+      - name: Checkout questie bridge module
+        uses: actions/checkout@v7
+        with:
+          repository: Aldori15/mod-questie-bridge
+          ref: ${{ env.BRIDGE_REF }}
+          path: src/modules/mod-questie-bridge
+
+      - name: Apply patches
+        run: |
+          for p in "$GITHUB_WORKSPACE"/ci/patches/*.patch; do
+            echo "== $p"
+            git -C src apply --verbose "$p"
+          done
+          for p in "$GITHUB_WORKSPACE"/ci/patches/module/*.patch; do
+            echo "== $p"
+            git -C src/modules/mod-playerbots apply --verbose "$p"
+          done
+          bash "$GITHUB_WORKSPACE"/ci/scripts/check-0045.sh src
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build clang-18 ccache libmysqlclient-dev libssl-dev libbz2-dev \
+            libreadline-dev libncurses-dev libboost-all-dev zlib1g-dev
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache:linux-arm64:${{ env.CORE_REF }}:${{ github.run_id }}
+          restore-keys: |
+            ccache:linux-arm64:${{ env.CORE_REF }}:
+            ccache:linux-arm64:
+
+      # The macOS flags without ThinLTO and PGO: the profile is Apple clang's, and neither changes what is allocated.
+      - name: Configure
+        run: |
+          cmake -S src -B build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DAPPS_BUILD=all \
+            -DTOOLS_BUILD=none \
+            -DSCRIPTS=static \
+            -DMODULES=static \
+            -DBUILD_TESTING=OFF \
+            -DWITH_WARNINGS=OFF \
+            -DUSE_COREPCH=ON \
+            -DUSE_SCRIPTPCH=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Reset ccache statistics
+        run: ccache -z
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: ccache stats
+        run: ccache -sv
+
+      - name: Install
+        run: |
+          DESTDIR="$GITHUB_WORKSPACE/stage" cmake --install build
+          ln -s "$GITHUB_WORKSPACE/stage$PREFIX" "$GITHUB_WORKSPACE/out"
+          test -f "$GITHUB_WORKSPACE/out/bin/worldserver"
+
+      # The pool is macOS only (SmallBlockPool.h), so this build must not contain it.
+      - name: Check the small-block pool is not built in
+        run: |
+          nm -C "$GITHUB_WORKSPACE/out/bin/worldserver" > syms.txt
+          grep -q 'World::Update' syms.txt || { echo "no symbol table to check"; exit 1; }
+          if grep -q 'SmallBlockPool::Age' syms.txt; then echo "SmallBlockPool is in the Linux build"; exit 1; fi
+
+      - name: Stage the SQL the updater needs
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out/sql-source/data/sql" \
+                   "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data"
+          for d in updates archive custom create playerbots; do
+            [ -d "src/data/sql/$d" ] || continue
+            cp -R "src/data/sql/$d" "$GITHUB_WORKSPACE/out/sql-source/data/sql/"
+          done
+          cp -R src/modules/mod-playerbots/data/sql \
+                "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data/"
+          for db in auth characters world; do
+            mkdir -p "$GITHUB_WORKSPACE/out/sql-source/data/sql/custom/db_$db"
+          done
+          mkdir -p "$GITHUB_WORKSPACE/out/sql-source/modules/mod-playerbots/data/sql/playerbots/archive"
+
+      - name: Write manifest
+        run: |
+          {
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "runner=${{ runner.name }} $(. /etc/os-release; echo "$PRETTY_NAME") $(uname -m) $(ldd --version | head -1)"
+            echo "compiler=$(clang++-18 --version | head -1)"
+            echo "core_ref=$CORE_REF $(git -C src rev-parse HEAD)"
+            echo "module_ref=$MODULE_REF $(git -C src/modules/mod-playerbots rev-parse HEAD)"
+            echo "bridge_ref=$BRIDGE_REF $(git -C src/modules/mod-questie-bridge rev-parse HEAD)"
+            echo "ci_commit=$(git -C ci rev-parse HEAD)"
+            for p in ci/patches/*.patch ci/patches/module/*.patch; do
+              echo "patch=$(basename "$p") $(sha256sum "$p" | cut -d' ' -f1)"
+            done
+          } > out/bin/BUILD-MANIFEST.txt
+          cat out/bin/BUILD-MANIFEST.txt
+
+      - name: Report sizes
+        run: du -sh out/bin && ls -lh out/bin
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: server-pb-linux-arm64
+          path: stage/opt/azerothcore-pb/
+          retention-days: 30
+          if-no-files-found: error

@@ -1,6 +1,6 @@
 name: build-linux
 
-# A Linux build of the same sources and patches, for measuring glibc malloc on this patch set; it is not installed
+# A Linux build of the same sources and patches, for measuring malloc on this patch set; it is not installed
 # anywhere. arm64 so it runs natively in a local container. Built against Ubuntu 24.04's packages (glibc 2.39), the
 # image it runs in, so nothing is bundled.
 on:
@@ -68,6 +68,15 @@ jobs:
             git -C src/modules/mod-playerbots apply --verbose "$p"
           done
           bash "$GITHUB_WORKSPACE"/ci/scripts/check-0045.sh src
+
+      # The bundled jemalloc is built without statistics. They only count; where blocks go is unchanged, so this
+      # build measures the allocator a default Linux build uses.
+      - name: Turn on jemalloc statistics
+        run: |
+          f=src/deps/jemalloc/jemalloc_internal_defs.h.in.cmake
+          test "$(grep -cx '/\* #undef JEMALLOC_STATS \*/' "$f")" = 1
+          sed -i 's|^/\* #undef JEMALLOC_STATS \*/$|#define JEMALLOC_STATS|' "$f"
+          grep -cx '#define JEMALLOC_STATS' "$f"
 
       - name: Install dependencies
         run: |
@@ -150,6 +159,7 @@ jobs:
             echo "module_ref=$MODULE_REF $(git -C src/modules/mod-playerbots rev-parse HEAD)"
             echo "bridge_ref=$BRIDGE_REF $(git -C src/modules/mod-questie-bridge rev-parse HEAD)"
             echo "ci_commit=$(git -C ci rev-parse HEAD)"
+            echo "jemalloc_stats=$(grep -cx '#define JEMALLOC_STATS' src/deps/jemalloc/jemalloc_internal_defs.h.in.cmake)"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(sha256sum "$p" | cut -d' ' -f1)"
             done

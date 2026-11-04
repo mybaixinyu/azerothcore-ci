@@ -1,0 +1,215 @@
+diff --git a/src/server/game/Entities/GameObject/GameObject.h b/src/server/game/Entities/GameObject/GameObject.h
+index 998e83279..c59aeb440 100644
+--- a/src/server/game/Entities/GameObject/GameObject.h
++++ b/src/server/game/Entities/GameObject/GameObject.h
+@@ -324,6 +324,12 @@ public:
+ 
+     [[nodiscard]] virtual uint32 GetScriptId() const;
+     [[nodiscard]] GameObjectAI* AI() const { return m_AI; }
++    // Where IsInWorld, FindMap and AI() read, for prefetching
++    [[nodiscard]] std::array<uintptr_t, 3> AIStateAddresses() const
++    {
++        std::array<uintptr_t, 2> const world = WorldStateAddresses();
++        return { world[0], world[1], reinterpret_cast<uintptr_t>(&m_AI) };
++    }
+ 
+     [[nodiscard]] std::string const& GetAIName() const;
+     void SetDisplayId(uint32 displayid);
+diff --git a/src/server/game/Entities/Object/Object.h b/src/server/game/Entities/Object/Object.h
+index a837c943a..39d662e38 100644
+--- a/src/server/game/Entities/Object/Object.h
++++ b/src/server/game/Entities/Object/Object.h
+@@ -36,6 +36,8 @@
+ #include "UpdateData.h"
+ #include "UpdateMask.h"
+ #include "ObjectVisibilityContainer.h"
++#include <array>
++#include <cstdint>
+ #include <memory>
+ #include <set>
+ #include <sstream>
+@@ -113,6 +115,7 @@ public:
+     virtual ~Object();
+ 
+     [[nodiscard]] bool IsInWorld() const { return m_inWorld; }
++    [[nodiscard]] uintptr_t InWorldAddress() const { return reinterpret_cast<uintptr_t>(&m_inWorld); }
+ 
+     virtual void AddToWorld();
+     virtual void RemoveFromWorld();
+@@ -645,6 +648,11 @@ public:
+     virtual void ResetMap();
+     [[nodiscard]] Map* GetMap() const { ASSERT(m_currMap); return m_currMap; }
+     [[nodiscard]] Map* FindMap() const { return m_currMap; }
++    // Where IsInWorld and FindMap read, for prefetching
++    [[nodiscard]] std::array<uintptr_t, 2> WorldStateAddresses() const
++    {
++        return { InWorldAddress(), reinterpret_cast<uintptr_t>(&m_currMap) };
++    }
+     //used to check all object's GetMap() calls when object is not in world!
+ 
+     void SetZoneScript();
+diff --git a/src/server/game/Entities/Unit/Unit.h b/src/server/game/Entities/Unit/Unit.h
+index 2efcdb1be..9be9d85ed 100644
+--- a/src/server/game/Entities/Unit/Unit.h
++++ b/src/server/game/Entities/Unit/Unit.h
+@@ -703,6 +703,13 @@ public:
+ 
+     [[nodiscard]] virtual bool isBeingLoaded() const { return false;}
+     [[nodiscard]] bool IsDuringRemoveFromWorld() const {return m_duringRemoveFromWorld;}
++    // Where IsInWorld, IsDuringRemoveFromWorld, FindMap, IsAIEnabled and AI() read, for prefetching
++    [[nodiscard]] std::array<uintptr_t, 5> AIStateAddresses() const
++    {
++        std::array<uintptr_t, 2> const world = WorldStateAddresses();
++        return { world[0], world[1], reinterpret_cast<uintptr_t>(&m_duringRemoveFromWorld),
++            reinterpret_cast<uintptr_t>(&IsAIEnabled), reinterpret_cast<uintptr_t>(&i_AI) };
++    }
+ 
+     /*********************************************************/
+     /***                    UNIT HELPERS                   ***/
+diff --git a/src/server/game/Events/GameEventMgr.cpp b/src/server/game/Events/GameEventMgr.cpp
+index 887fab6b4..1b5abf7e4 100644
+--- a/src/server/game/Events/GameEventMgr.cpp
++++ b/src/server/game/Events/GameEventMgr.cpp
+@@ -36,6 +36,8 @@
+ #include "WorldState.h"
+ #include "WorldStatePackets.h"
+ #include <chrono>
++#include <type_traits>
++#include <utility>
+ 
+ GameEventMgr* GameEventMgr::instance()
+ {
+@@ -1894,9 +1896,11 @@ public:
+ 
+     void Visit(std::unordered_map<ObjectGuid, Creature*>& creatureMap)
+     {
+-        for (ObjectGuid const& guid : Snapshot(creatureMap))
++        Snapshot<Creature> const snapshot(creatureMap);
++        for (size_t i = 0; i < snapshot.Size(); ++i)
+         {
+-            Creature* creature = _map->GetCreature(guid);
++            PrefetchAhead(snapshot, i);
++            Creature* creature = _map->GetCreature(snapshot.Guid(i));
+             if (!creature || !creature->IsInWorld() || creature->IsDuringRemoveFromWorld() || !creature->FindMap() || !creature->IsAIEnabled || !creature->AI())
+                 continue;
+ 
+@@ -1906,9 +1910,11 @@ public:
+ 
+     void Visit(std::unordered_map<ObjectGuid, GameObject*>& gameObjectMap)
+     {
+-        for (ObjectGuid const& guid : Snapshot(gameObjectMap))
++        Snapshot<GameObject> const snapshot(gameObjectMap);
++        for (size_t i = 0; i < snapshot.Size(); ++i)
+         {
+-            GameObject* go = _map->GetGameObject(guid);
++            PrefetchAhead(snapshot, i);
++            GameObject* go = _map->GetGameObject(snapshot.Guid(i));
+             if (!go || !go->IsInWorld() || !go->FindMap() || !go->AI())
+                 continue;
+ 
+@@ -1933,17 +1939,99 @@ private:
+     //! garbage and the following dereference faults. Walk a snapshot of the guids instead
+     //! and look each object up again - the store, not a pointer we cached, is the authority
+     //! on whether the object still exists by the time we reach it.
++    //!
++    //! Next to each guid the snapshot keeps two addresses, used only as prefetch hints and never read through: where
++    //! the store keeps the entry, and the object. Either may be stale by the time it is used, which costs nothing, as
++    //! a prefetch does not fault and the walk still asks the store.
+     template<class T>
+-    static std::vector<ObjectGuid> Snapshot(std::unordered_map<ObjectGuid, T*> const& objectMap)
++    class Snapshot
+     {
+-        std::vector<ObjectGuid> guids;
+-        guids.reserve(objectMap.size());
+-        for (auto const& p : objectMap)
+-            guids.push_back(p.first);
++    public:
++        explicit Snapshot(std::unordered_map<ObjectGuid, T*> const& objectMap)
++        {
++            _entries.reserve(objectMap.size());
++            for (auto const& p : objectMap)
++                _entries.push_back({ p.first, reinterpret_cast<uintptr_t>(&p), reinterpret_cast<uintptr_t>(p.second) });
++
++            // Member offsets are the same for every T; take them from an object that is alive now.
++            for (Entry const& entry : _entries)
++            {
++                if (!entry.object)
++                    continue;
++
++                _fields = reinterpret_cast<T const*>(entry.object)->AIStateAddresses();
++                for (uintptr_t& field : _fields)
++                    field -= entry.object;
++
++                _haveFields = true;
++                break;
++            }
++        }
++
++        [[nodiscard]] size_t Size() const { return _entries.size(); }
++        [[nodiscard]] ObjectGuid const& Guid(size_t i) const { return _entries[i].guid; }
++
++        //! The store entry's hash and key, which a lookup reads, and its link, which the lookup of the next entry reads
++        //! (libc++ keeps them in the 16 bytes before the key and value; a different layout only weakens the hint).
++        void PrefetchEntry(size_t i) const
++        {
++            __builtin_prefetch(reinterpret_cast<void const*>(_entries[i].entry - 16));
++            __builtin_prefetch(reinterpret_cast<void const*>(_entries[i].entry + 15));
++        }
+ 
+-        return guids;
++        //! The fields the walk's checks read and the AI pointer.
++        void PrefetchObject(size_t i) const
++        {
++            if (!_haveFields || !_entries[i].object)
++                return;
++
++            for (uintptr_t field : _fields)
++                __builtin_prefetch(reinterpret_cast<void const*>(_entries[i].object + field));
++        }
++
++    private:
++        struct Entry
++        {
++            ObjectGuid guid;
++            uintptr_t entry;
++            uintptr_t object;
++        };
++
++        std::vector<Entry> _entries;
++        decltype(std::declval<T const&>().AIStateAddresses()) _fields{};
++        bool _haveFields = false;
++    };
++
++    //! Memory hints only: visiting an object mostly waits on cache misses for the store entry, the object and its AI.
++    //! The entry is prefetched EntryAhead steps early and the object ObjectAhead steps early, from the snapshot's
++    //! addresses; the AI NearAhead steps early, through a fresh lookup that by then hits the cache. What the walk
++    //! calls, and in which order, is unchanged.
++    template<class T>
++    void PrefetchAhead(Snapshot<T> const& snapshot, size_t i) const
++    {
++        if (i + EntryAhead < snapshot.Size())
++            snapshot.PrefetchEntry(i + EntryAhead);
++        if (i + ObjectAhead < snapshot.Size())
++            snapshot.PrefetchObject(i + ObjectAhead);
++        if (i + NearAhead < snapshot.Size())
++            if (T* object = Find<T>(snapshot.Guid(i + NearAhead)))
++                if (auto* ai = object->AI())
++                    __builtin_prefetch(ai);
+     }
+ 
++    template<class T>
++    T* Find(ObjectGuid const& guid) const
++    {
++        if constexpr (std::is_same_v<T, Creature>)
++            return _map->GetCreature(guid);
++        else
++            return _map->GetGameObject(guid);
++    }
++
++    static constexpr size_t NearAhead = 4;
++    static constexpr size_t ObjectAhead = 8;
++    static constexpr size_t EntryAhead = 12;
++
+     Map* _map;
+     uint16 _eventId;
+     bool _activate;

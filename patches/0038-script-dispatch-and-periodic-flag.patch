@@ -1,20 +1,8 @@
-diff --git a/src/server/game/Scripting/ScriptMgr.cpp b/src/server/game/Scripting/ScriptMgr.cpp
-index 6cbb5bef3..498a0d308 100644
---- a/src/server/game/Scripting/ScriptMgr.cpp
-+++ b/src/server/game/Scripting/ScriptMgr.cpp
-@@ -157,6 +157,7 @@ void ScriptMgr::Unload()
-         }
- 
-         ScriptRegistry<typename Info::type>::ScriptPointerList.clear();
-+        ScriptRegistry<typename Info::type>::ScriptsById.clear();
-     });
- 
-     delete[] SpellSummary;
 diff --git a/src/server/game/Scripting/ScriptMgr.h b/src/server/game/Scripting/ScriptMgr.h
-index 7749dfa8d..41110b073 100644
+index 217acd9..058c1be 100644
 --- a/src/server/game/Scripting/ScriptMgr.h
 +++ b/src/server/game/Scripting/ScriptMgr.h
-@@ -782,6 +782,8 @@ public:
+@@ -783,6 +783,8 @@ public:
      // The actual list of scripts. This will be accessed concurrently, so it must not be modified
      // after server startup.
      static ScriptMap ScriptPointerList;
@@ -23,7 +11,7 @@ index 7749dfa8d..41110b073 100644
      // After database load scripts
      static ScriptVector ALScripts;
      // The list of hook types with the list of enabled scripts for this specific hook.
-@@ -793,6 +795,14 @@ public:
+@@ -794,6 +796,14 @@ public:
          EnabledHooks.resize(totalAvailableHooks);
      }
  
@@ -38,7 +26,7 @@ index 7749dfa8d..41110b073 100644
      static void AddScript(TScript* const script, std::vector<uint16> enabledHooks = {})
      {
          ASSERT(script);
-@@ -815,7 +825,7 @@ public:
+@@ -816,7 +826,7 @@ public:
                  EnabledHooks[v].emplace_back(script);
  
              // We're dealing with a code-only script; just add it.
@@ -47,7 +35,7 @@ index 7749dfa8d..41110b073 100644
              sScriptMgr->IncreaseScriptCount();
          }
      }
-@@ -868,7 +878,7 @@ public:
+@@ -869,7 +879,7 @@ public:
                      }
  
                      // Assign new script!
@@ -56,7 +44,7 @@ index 7749dfa8d..41110b073 100644
  
                      // Increment script count only with new scripts
                      if (!oldScript)
-@@ -890,7 +900,7 @@ public:
+@@ -891,7 +901,7 @@ public:
                      EnabledHooks[v].emplace_back(script);
  
                  // We're dealing with a code-only script; just add it.
@@ -65,7 +53,15 @@ index 7749dfa8d..41110b073 100644
                  sScriptMgr->IncreaseScriptCount();
              }
          }
-@@ -899,11 +909,7 @@ public:
+@@ -906,6 +916,7 @@ public:
+             delete script;
+ 
+         ScriptPointerList.clear();
++        ScriptsById.clear();
+ 
+         for (auto& hookScripts : EnabledHooks)
+             hookScripts.clear();
+@@ -914,11 +925,7 @@ public:
      // Gets a script by its ID (assigned by ObjectMgr).
      static TScript* GetScriptById(uint32 id)
      {
@@ -78,7 +74,7 @@ index 7749dfa8d..41110b073 100644
      }
  
  private:
-@@ -933,6 +939,7 @@ private:
+@@ -948,6 +955,7 @@ private:
  
  // Instantiate static members of ScriptRegistry.
  template<class TScript> std::map<uint32, TScript*> ScriptRegistry<TScript>::ScriptPointerList;
@@ -87,7 +83,7 @@ index 7749dfa8d..41110b073 100644
  template<class TScript> std::vector<std::vector<TScript*>> ScriptRegistry<TScript>::EnabledHooks;
  template<class TScript> uint32 ScriptRegistry<TScript>::_scriptIdCounter = 0;
 diff --git a/src/server/game/Scripting/ScriptMgrMacros.h b/src/server/game/Scripting/ScriptMgrMacros.h
-index 808959767..b0199291a 100644
+index 8089597..b019929 100644
 --- a/src/server/game/Scripting/ScriptMgrMacros.h
 +++ b/src/server/game/Scripting/ScriptMgrMacros.h
 @@ -52,15 +52,13 @@ inline T* GetReturnAIScript(std::function<T*(ScriptName*)> executeHook)
@@ -112,7 +108,7 @@ index 808959767..b0199291a 100644
  }
  
 diff --git a/src/server/game/Spells/Auras/SpellAuraEffects.cpp b/src/server/game/Spells/Auras/SpellAuraEffects.cpp
-index e3e36f820..160a451e4 100644
+index 24e2d29..7df15cb 100644
 --- a/src/server/game/Spells/Auras/SpellAuraEffects.cpp
 +++ b/src/server/game/Spells/Auras/SpellAuraEffects.cpp
 @@ -632,6 +632,8 @@ void AuraEffect::CalculatePeriodic(Unit* caster, bool create, bool load)
@@ -125,7 +121,7 @@ index e3e36f820..160a451e4 100644
      if (m_amplitude <= 0)
          m_amplitude = 1000;
 diff --git a/src/server/game/Spells/Auras/SpellAuraEffects.h b/src/server/game/Spells/Auras/SpellAuraEffects.h
-index 0a419e5d4..99dccdc41 100644
+index 0a419e5..99dccdc 100644
 --- a/src/server/game/Spells/Auras/SpellAuraEffects.h
 +++ b/src/server/game/Spells/Auras/SpellAuraEffects.h
 @@ -90,7 +90,12 @@ public:
@@ -143,10 +139,10 @@ index 0a419e5d4..99dccdc41 100644
      bool HasSpellClassMask() const;
  
 diff --git a/src/server/game/Spells/Auras/SpellAuras.cpp b/src/server/game/Spells/Auras/SpellAuras.cpp
-index e0d636462..2c2b7ea9e 100644
+index 4529e70..d0471af 100644
 --- a/src/server/game/Spells/Auras/SpellAuras.cpp
 +++ b/src/server/game/Spells/Auras/SpellAuras.cpp
-@@ -841,9 +841,10 @@ void Aura::UpdateOwner(uint32 diff, WorldObject* owner)
+@@ -847,9 +847,10 @@ void Aura::UpdateOwner(uint32 diff, WorldObject* owner)
          m_updateTargetMapInterval -= diff;
  
      // update aura effects
@@ -161,10 +157,10 @@ index e0d636462..2c2b7ea9e 100644
      // remove spellmods after effects update
      if (modSpell)
 diff --git a/src/server/game/Spells/Auras/SpellAuras.h b/src/server/game/Spells/Auras/SpellAuras.h
-index 6430277c9..57354a640 100644
+index b13fde4..122ec9b 100644
 --- a/src/server/game/Spells/Auras/SpellAuras.h
 +++ b/src/server/game/Spells/Auras/SpellAuras.h
-@@ -175,8 +175,13 @@ public:
+@@ -176,8 +176,13 @@ public:
      bool HasEffect(uint8 effIndex) const { return bool(GetEffect(effIndex)); }
      bool HasEffectType(AuraType type) const;
      AuraEffect* GetEffect(uint8 effIndex) const { ASSERT (effIndex < MAX_SPELL_EFFECTS); return m_effects[effIndex]; }
@@ -178,7 +174,7 @@ index 6430277c9..57354a640 100644
          for (AuraEffect const* effect : m_effects)
          {
              __builtin_prefetch(effect);
-@@ -278,6 +283,7 @@ protected:
+@@ -279,6 +284,7 @@ protected:
      uint8 const m_casterLevel;                          // Aura level (store caster level for correct show level dep amount)
      uint8 m_procCharges;                                // Aura charges (0 for infinite)
      uint8 m_stackAmount;                                // Aura stack amount

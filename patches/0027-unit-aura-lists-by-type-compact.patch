@@ -1,8 +1,8 @@
 diff --git a/src/server/game/Entities/Unit/Unit.cpp b/src/server/game/Entities/Unit/Unit.cpp
-index 089620e..90fd0af 100644
+index f65662a..492c887 100644
 --- a/src/server/game/Entities/Unit/Unit.cpp
 +++ b/src/server/game/Entities/Unit/Unit.cpp
-@@ -4731,9 +4731,73 @@ void Unit::_RemoveNoStackAurasDueToAura(Aura* aura, bool owned)
+@@ -4754,9 +4754,73 @@ void Unit::_RemoveNoStackAurasDueToAura(Aura* aura, bool owned)
  void Unit::_RegisterAuraEffect(AuraEffect* aurEff, bool apply)
  {
      if (apply)
@@ -78,7 +78,7 @@ index 089620e..90fd0af 100644
  }
  
  // All aura base removes should go threw this function!
-@@ -5154,10 +5218,11 @@ void Unit::RemoveAurasDueToItemSpell(uint32 spellId, ObjectGuid castItemGuid)
+@@ -5178,10 +5242,11 @@ void Unit::RemoveAurasDueToItemSpell(uint32 spellId, ObjectGuid castItemGuid)
  void Unit::RemoveAurasByType(AuraType auraType, ObjectGuid casterGUID, Aura* except, bool negative, bool positive)
  {
      // simple check if list is empty
@@ -92,7 +92,7 @@ index 089620e..90fd0af 100644
      {
          Aura* aura = (*iter)->GetBase();
          AuraApplication* aurApp = aura->GetApplicationOfTarget(GetGUID());
-@@ -5169,7 +5234,7 @@ void Unit::RemoveAurasByType(AuraType auraType, ObjectGuid casterGUID, Aura* exc
+@@ -5193,7 +5258,7 @@ void Unit::RemoveAurasByType(AuraType auraType, ObjectGuid casterGUID, Aura* exc
              uint32 removedAuras = m_removedAurasCount;
              RemoveAura(aurApp);
              if (m_removedAurasCount > removedAuras)
@@ -101,7 +101,7 @@ index 089620e..90fd0af 100644
          }
      }
  }
-@@ -5780,7 +5845,7 @@ bool Unit::HasAura(uint32 spellId, ObjectGuid casterGUID, ObjectGuid itemCasterG
+@@ -5804,7 +5869,7 @@ bool Unit::HasAura(uint32 spellId, ObjectGuid casterGUID, ObjectGuid itemCasterG
  
  bool Unit::HasAuraType(AuraType auraType) const
  {
@@ -110,7 +110,7 @@ index 089620e..90fd0af 100644
  }
  
  bool Unit::HasAuraTypeWithCaster(AuraType auratype, ObjectGuid caster) const
-@@ -5911,7 +5976,8 @@ uint32 Unit::GetDiseasesByCaster(ObjectGuid casterGUID, uint8 mode)
+@@ -5935,7 +6000,8 @@ uint32 Unit::GetDiseasesByCaster(ObjectGuid casterGUID, uint8 mode)
      uint32 diseases = 0;
      for (uint8 index = 0; diseaseAuraTypes[index] != SPELL_AURA_NONE; ++index)
      {
@@ -120,7 +120,7 @@ index 089620e..90fd0af 100644
          {
              // Get auras with disease dispel type by caster
              if ((*i)->GetSpellInfo()->Dispel == DISPEL_DISEASE
-@@ -5922,7 +5988,7 @@ uint32 Unit::GetDiseasesByCaster(ObjectGuid casterGUID, uint8 mode)
+@@ -5946,7 +6012,7 @@ uint32 Unit::GetDiseasesByCaster(ObjectGuid casterGUID, uint8 mode)
                  if (mode == 1)
                  {
                      RemoveAura((*i)->GetId(), (*i)->GetCasterGUID());
@@ -129,7 +129,7 @@ index 089620e..90fd0af 100644
                      continue;
                  }
                  // used for glyph of scourge strike
-@@ -15890,7 +15956,8 @@ void Unit::CastDelayedSpellWithPeriodicAmount(Unit* caster, uint32 spellId, Aura
+@@ -15930,7 +15996,8 @@ void Unit::CastDelayedSpellWithPeriodicAmount(Unit* caster, uint32 spellId, Aura
      uint8 effectIndex, TriggerCastFlags extraTriggerFlags)
  {
      AuraEffect* aurEff = nullptr;
@@ -140,18 +140,18 @@ index 089620e..90fd0af 100644
          aurEff = *i;
          if (aurEff->GetCasterGUID() != caster->GetGUID() || aurEff->GetId() != spellId || aurEff->GetEffIndex() != effectIndex || !aurEff->GetTotalTicks())
 diff --git a/src/server/game/Entities/Unit/Unit.h b/src/server/game/Entities/Unit/Unit.h
-index f268a9c..2efcdb1 100644
+index 05caeca..43aee3c 100644
 --- a/src/server/game/Entities/Unit/Unit.h
 +++ b/src/server/game/Entities/Unit/Unit.h
-@@ -31,6 +31,7 @@
- #include "ThreatManager.h"
+@@ -32,6 +32,7 @@
  #include "UnitDefines.h"
  #include "UnitUtils.h"
+ #include <array>
 +#include <atomic>
  #include <boost/container/flat_map.hpp>
  #include <functional>
  #include <utility>
-@@ -1433,7 +1434,7 @@ public:
+@@ -1442,7 +1443,7 @@ public:
      void _RemoveAllAuraStatMods();
      void _ApplyAllAuraStatMods();
  
@@ -160,7 +160,7 @@ index f268a9c..2efcdb1 100644
      AuraList&       GetSingleCastAuras()       { return m_scAuras; }
      [[nodiscard]] AuraList const& GetSingleCastAuras() const { return m_scAuras; }
  
-@@ -2178,7 +2179,46 @@ protected:
+@@ -2192,7 +2193,46 @@ protected:
      std::vector<Aura*> m_auraUpdateSnapshot; // _UpdateSpells scratch buffer
      uint32 m_removedAurasCount;
  

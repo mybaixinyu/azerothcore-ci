@@ -109,18 +109,18 @@ index faed72a..0c59b61 100644
      {
          std::ostringstream out;
 diff --git a/src/Ai/Base/Actions/SetCraftAction.cpp b/src/Ai/Base/Actions/SetCraftAction.cpp
-index 0e96547..ca66821 100644
+index ab74118..a648fff 100644
 --- a/src/Ai/Base/Actions/SetCraftAction.cpp
 +++ b/src/Ai/Base/Actions/SetCraftAction.cpp
-@@ -10,6 +10,7 @@
- #include "Event.h"
- #include "PlayerbotTextMgr.h"
+@@ -12,6 +12,7 @@
  #include "Playerbots.h"
+ 
+ #include <array>
 +#include <mutex>
  
- std::map<uint32, SkillLineAbilityEntry const*> SetCraftAction::skillSpells;
- 
-@@ -49,11 +50,13 @@ bool SetCraftAction::Execute(Event event)
+ static constexpr std::array<uint32, 10> CRAFTING_SKILLS = {
+     SKILL_ALCHEMY,
+@@ -82,11 +83,13 @@ bool SetCraftAction::Execute(Event event)
      if (!proto)
          return false;
  
@@ -136,7 +136,7 @@ index 0e96547..ca66821 100644
  
      data.required.clear();
      data.obtained.clear();
-@@ -69,7 +72,8 @@ bool SetCraftAction::Execute(Event event)
+@@ -102,7 +105,8 @@ bool SetCraftAction::Execute(Event event)
          if (!spellInfo)
              continue;
  
@@ -199,10 +199,10 @@ index 437ebb8..ee05fe8 100644
      std::vector<std::string> allowedInstances;
      for (auto it : instances)
 diff --git a/src/Bot/Cmd/ChatHelper.cpp b/src/Bot/Cmd/ChatHelper.cpp
-index c4739c5..d2a4ed6 100644
+index 5f29b01..fe35da4 100644
 --- a/src/Bot/Cmd/ChatHelper.cpp
 +++ b/src/Bot/Cmd/ChatHelper.cpp
-@@ -638,12 +638,20 @@ bool ChatHelper::parseableItem(std::string const text)
+@@ -702,12 +702,20 @@ bool ChatHelper::parseableItem(std::string const text)
             substrContainsInMap<uint32>(text, skills) || parseMoney(text) > 0;
  }
  
@@ -224,7 +224,7 @@ index c4739c5..d2a4ed6 100644
  
      std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(player);
      uint32 c0 = tabs[0];
-@@ -654,11 +662,11 @@ std::string const ChatHelper::FormatClass(Player* player, int8 spec)
+@@ -718,11 +726,11 @@ std::string const ChatHelper::FormatClass(Player* player, int8 spec)
      out << (c1 ? "|h|cff00ff00" : "") << c1 << "|h|cffffffff/";
      out << (c2 ? "|h|cff00ff00" : "") << c2 << "|h|cffffffff";
  
@@ -309,7 +309,7 @@ index 15bc1f9..b63e709 100644
 +        cached->second.clear();
  }
 diff --git a/src/Bot/Factory/PlayerbotFactory.cpp b/src/Bot/Factory/PlayerbotFactory.cpp
-index cb3117a..9b9d84d 100644
+index 0312066..5c26a52 100644
 --- a/src/Bot/Factory/PlayerbotFactory.cpp
 +++ b/src/Bot/Factory/PlayerbotFactory.cpp
 @@ -41,6 +41,7 @@
@@ -329,7 +329,7 @@ index cb3117a..9b9d84d 100644
  std::vector<uint32> PlayerbotFactory::ccBreakTrinketCache;
  
  namespace
-@@ -3515,29 +3518,36 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
+@@ -3558,29 +3561,36 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
  
  void PlayerbotFactory::InitAvailableSpells()
  {
@@ -382,10 +382,10 @@ index cb3117a..9b9d84d 100644
          Trainer::Trainer* trainer = sObjectMgr->GetTrainer(trainerId);
  
 diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
-index 34d5660..e2910dc 100644
+index 264c84c..39f0f51 100644
 --- a/src/Bot/PlayerbotAI.cpp
 +++ b/src/Bot/PlayerbotAI.cpp
-@@ -80,7 +80,8 @@ std::vector<std::string> split(std::string const s, char delim);
+@@ -83,7 +83,8 @@ std::vector<std::string> split(std::string const s, char delim);
  char* strstri(char const* str1, char const* str2);
  std::string& trim(std::string& s);
  
@@ -395,7 +395,7 @@ index 34d5660..e2910dc 100644
  
  PlayerbotChatHandler::PlayerbotChatHandler(Player* pMasterPlayer) : ChatHandler(pMasterPlayer->GetSession()) {}
  
-@@ -683,7 +684,12 @@ void PlayerbotAI::HandleCommands()
+@@ -696,7 +697,12 @@ void PlayerbotAI::HandleCommands()
      }
  }
  
@@ -409,7 +409,7 @@ index 34d5660..e2910dc 100644
  void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang)
  {
      if (!bot)
-@@ -725,16 +731,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
+@@ -738,16 +744,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
          filtered = filtered.substr(sPlayerbotAIConfig.CommandPrefix.size());
      }
  
@@ -427,7 +427,7 @@ index 34d5660..e2910dc 100644
      {
          if (filtered.find(i->first) == 0)
          {
-@@ -1017,19 +1015,7 @@ void PlayerbotAI::LeaveOrDisbandGroup()
+@@ -1033,19 +1031,7 @@ void PlayerbotAI::LeaveOrDisbandGroup()
  
  bool PlayerbotAI::IsAllowedCommand(std::string const text)
  {
@@ -448,7 +448,7 @@ index 34d5660..e2910dc 100644
      {
          if (text.find(*i) == 0)
          {
-@@ -1072,17 +1058,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
+@@ -1088,17 +1074,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
          filtered = filtered.substr(sPlayerbotAIConfig.CommandPrefix.size());
      }
  
@@ -468,10 +468,10 @@ index 34d5660..e2910dc 100644
          if (filtered.find(i->first) == 0)
          {
 diff --git a/src/Bot/PlayerbotAI.h b/src/Bot/PlayerbotAI.h
-index ee27a26..eaa9851 100644
+index 3d67426..a004d62 100644
 --- a/src/Bot/PlayerbotAI.h
 +++ b/src/Bot/PlayerbotAI.h
-@@ -671,7 +671,7 @@ protected:
+@@ -687,7 +687,7 @@ protected:
      PlayerbotSecurity security;
      std::map<std::string, time_t> whispers;
      std::pair<ChatMsg, time_t> currentChat;
@@ -520,10 +520,10 @@ index 8ad79c1..20a5059 100644
                  return true;
              }
 diff --git a/src/Mgr/Text/PlayerbotTextMgr.cpp b/src/Mgr/Text/PlayerbotTextMgr.cpp
-index e0e9128..30f9947 100644
+index 0634c0f..302499c 100644
 --- a/src/Mgr/Text/PlayerbotTextMgr.cpp
 +++ b/src/Mgr/Text/PlayerbotTextMgr.cpp
-@@ -82,13 +82,14 @@ std::string PlayerbotTextMgr::GetBotText(std::string name)
+@@ -101,13 +101,14 @@ std::string PlayerbotTextMgr::GetBotText(std::string name)
          return "";
      }
  
@@ -540,7 +540,7 @@ index e0e9128..30f9947 100644
      BotTextEntry textEntry = list[urand(0, list.size() - 1)];
      return !textEntry.m_text[GetLocalePriority()].empty() ? textEntry.m_text[GetLocalePriority()] : textEntry.m_text[0];
  }
-@@ -130,13 +131,14 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::map<std::
+@@ -145,13 +146,14 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::map<std::
          LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts loaded!", replyType);
          return "";
      }
@@ -557,7 +557,7 @@ index e0e9128..30f9947 100644
      std::vector<BotTextEntry> proper_list;
      for (auto text : list)
      {
-@@ -168,10 +170,11 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::string na
+@@ -182,10 +184,11 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::string na
  
  bool PlayerbotTextMgr::rollTextChance(std::string name)
  {

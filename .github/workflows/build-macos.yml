@@ -104,12 +104,16 @@ jobs:
       # TSan reports need line numbers, so that variant also carries debug info.
       - name: Configure
         run: |
+          # pgo/flags holds compiler options that change the instrumented CFG; a profile only matches a build made
+          # with the options it was trained with, so the instrumented and the using build both read this one file.
+          pgo_extra=$(cat "$GITHUB_WORKSPACE/ci/pgo/flags" 2>/dev/null || true)
           pgo_flag=
           if [ "${{ inputs.pgo_generate }}" = true ]; then
-            pgo_flag=-fprofile-generate
+            pgo_flag="-fprofile-generate $pgo_extra"
           elif [ -f "$GITHUB_WORKSPACE/ci/pgo/worldserver.profdata" ]; then
-            pgo_flag="-fprofile-use=$GITHUB_WORKSPACE/ci/pgo/worldserver.profdata"
+            pgo_flag="-fprofile-use=$GITHUB_WORKSPACE/ci/pgo/worldserver.profdata $pgo_extra"
           fi
+          echo "pgo_flag=$pgo_flag"
           cmake -S src -B build -G Ninja \
             -DCMAKE_INSTALL_PREFIX="$PREFIX" \
             -DCMAKE_BUILD_TYPE=${{ inputs.tsan && 'RelWithDebInfo' || 'Release' }} \
@@ -224,6 +228,7 @@ jobs:
             echo "tsan=${{ inputs.tsan }}"
             echo "lto=${{ inputs.lto }}"
             echo "pgo_generate=${{ inputs.pgo_generate }}"
+            echo "pgo_flags=$(cat ci/pgo/flags 2>/dev/null)"
             [ "${{ inputs.pgo_generate }}" != true ] && [ -f ci/pgo/worldserver.profdata ] && echo "pgo_profile=$(shasum -a 256 ci/pgo/worldserver.profdata | cut -d' ' -f1)"
             for p in ci/patches/*.patch ci/patches/module/*.patch; do
               echo "patch=$(basename "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"

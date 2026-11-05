@@ -24,6 +24,10 @@ on:
         description: 'Instrument for a PGO training run instead of using pgo/worldserver.profdata'
         type: boolean
         default: false
+      link_map:
+        description: 'Also upload a linker map of worldserver (which object every symbol was taken from)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -240,6 +244,30 @@ jobs:
 
       - name: Report sizes
         run: du -sh out/bin out/bin/lib && ls -lh out/bin
+
+      # For comparing which copy of an inline function the link keeps in an instrumented and a normal build. Runs the
+      # worldserver link again with -map, writing to a scratch output after the payload is staged, so the payload is
+      # not touched.
+      - name: Linker map of worldserver
+        if: inputs.link_map
+        run: |
+          cmd=$(ninja -C build -t commands worldserver | tail -1)
+          printf '%s\n' "$cmd" | cut -c1-300
+          case "$cmd" in *" @"*) echo "the link uses a response file"; exit 1 ;; esac
+          out=$(printf '%s\n' "$cmd" | grep -oE ' -o [^ ]*worldserver( |$)' | head -1 | cut -c5- | tr -d ' ')
+          [ -n "$out" ] || { echo "last command is not the worldserver link"; exit 1; }
+          new=${cmd/" -o $out"/" -o $RUNNER_TEMP/worldserver-maplink -Wl,-map,$GITHUB_WORKSPACE/worldserver.map"}
+          [ "$new" != "$cmd" ] || { echo "could not rewrite the output path"; exit 1; }
+          (cd build && eval "$new")
+          grep -c . "$GITHUB_WORKSPACE/worldserver.map"
+
+      - uses: actions/upload-artifact@v5
+        if: inputs.link_map
+        with:
+          name: worldserver-map${{ inputs.pgo_generate && '-pgen' || '' }}
+          path: worldserver.map
+          retention-days: 30
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v5
         with:

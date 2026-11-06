@@ -346,6 +346,14 @@ build instead of being silently skipped.
   spells as `HasSpell` sees them, talents, level, active spec, the food cheat and three config flags. Every 64th kept
   list per engine compares against a fresh build, logs one error and rebuilds on a mismatch, so a new input upstream
   is caught. Spell and talent hooks were rejected because `addSpell` bypasses them.
+- `module/0047-playerbots-loot-after-dismount.patch` — A bot in reach of loot or a gathering node while its
+  master rode stayed in place for good: `open loot` dismounted it and returned, so on the next tick `check mount
+  state` (relevance 100) mounted it again before `open loot` (8) ran, and `follow` never got a turn. Seen on a
+  paladin bot next to an ore node, about 360 rounds in one session. Upstream #2807 had added that return to the
+  dismount, and #2915 then stopped deferring the loot after it, which had ended the loop after one round.
+  Dismounting removes the mount aura and clears `UNIT_FLAG_MOUNT` at once, so `DoLoot` now goes on in the same tick,
+  as it did before #2807 and as the battleground and taxi actions do after their own dismounts. The loot is
+  deferred when that attempt fails at rest, and it is not deferred when the bot is still mounted.
 
 The patches are deliberately left uncommitted in the build tree, so the revision
 banner keeps the `+` suffix that marks a patched build.

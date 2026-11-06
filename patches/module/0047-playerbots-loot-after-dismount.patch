@@ -1,0 +1,36 @@
+diff --git a/src/Ai/Base/Actions/LootAction.cpp b/src/Ai/Base/Actions/LootAction.cpp
+index 9e21ca38..2c3cf303 100644
+--- a/src/Ai/Base/Actions/LootAction.cpp
++++ b/src/Ai/Base/Actions/LootAction.cpp
+@@ -97,14 +97,14 @@ bool OpenLootAction::Execute(Event /*event*/)
+         return false;
+ 
+     // DoLoot stops the bot first, which means "try again", not a failure; deferring after that
+-    // stop would make the bot walk away and come back. Only a dry failure at rest defers.
++    // stop would make the bot walk away and come back. Only a dry failure at rest defers: a bot
++    // DoLoot dismounted and then failed is at rest, one it left mounted never got that far.
+     bool const wasMoving = bot->isMoving();
+-    bool const wasMounted = bot->IsMounted();
+ 
+     bool const result = DoLoot(lootObject);
+     if (result)
+         availableLoot->BeginLoot(lootObject.guid);
+-    else if (!lootObject.IsEmpty() && !wasMoving && !wasMounted)
++    else if (!lootObject.IsEmpty() && !wasMoving && !bot->IsMounted())
+     {
+         availableLoot->DeferLoot(lootObject.guid);
+         if (AI_VALUE(LootObject, "loot target").guid == lootObject.guid)
+@@ -130,11 +130,12 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
+         return false;
+     }
+ 
++    // Dismounting is immediate, so loot in this tick: on a later one "check mount state" runs
++    // first and remounts a bot whose master is mounted, and the two would alternate forever.
+     if (bot->IsMounted())
+     {
+         bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+         botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
+-        return false;
+     }
+ 
+     if (creature && creature->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE))

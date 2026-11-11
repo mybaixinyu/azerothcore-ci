@@ -1,0 +1,137 @@
+diff --git a/src/server/game/Entities/Creature/Creature.cpp b/src/server/game/Entities/Creature/Creature.cpp
+index f67aebf2332..c3159814300 100644
+--- a/src/server/game/Entities/Creature/Creature.cpp
++++ b/src/server/game/Entities/Creature/Creature.cpp
+@@ -748,6 +748,21 @@ void Creature::Update(uint32 diff)
+             if (m_deathState != DeathState::Corpse)
+                 break;
+ 
++            if (loot.pendingCorpseRollCleanup)
++            {
++                loot.pendingCorpseRollCleanup = false;
++                if (loot.loot_type == LOOT_CORPSE && loot.isLooted())
++                {
++                    loot.CloseLootSessions(*this);
++                    if (HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
++                    {
++                        AllLootRemovedFromCorpse();
++                        RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
++                        loot.clear();
++                    }
++                }
++            }
++
+             if (m_groupLootTimer && lootingGroupLowGUID)
+             {
+                 if (m_groupLootTimer <= diff)
+diff --git a/src/server/game/Groups/Group.cpp b/src/server/game/Groups/Group.cpp
+index 1a629786989..748d453b3ff 100644
+--- a/src/server/game/Groups/Group.cpp
++++ b/src/server/game/Groups/Group.cpp
+@@ -1639,6 +1639,8 @@ void Group::CountTheRoll(Rolls::iterator rollI)
+         return;
+     }
+ 
++    bool const hadLoot = !roll->getLoot()->isLooted();
++
+     //end of the roll
+     if (roll->totalNeed > 0)
+     {
+@@ -1836,14 +1838,17 @@ void Group::CountTheRoll(Rolls::iterator rollI)
+             item->is_blocked = false;
+     }
+ 
+-    if (Loot* loot = roll->getLoot(); loot && loot->isLooted() && loot->sourceGameObject)
++    if (Loot* loot = roll->getLoot(); loot && loot->isLooted())
+     {
+-        GameObjectTemplate const* goInfo = loot->sourceGameObject->GetGOInfo();
+-        if (goInfo && goInfo->type == GAMEOBJECT_TYPE_CHEST)
++        if (loot->sourceGameObject)
+         {
++            GameObjectTemplate const* goInfo = loot->sourceGameObject->GetGOInfo();
+             // Deactivate chest if the last item was rolled in group
+-            loot->sourceGameObject->SetLootState(GO_JUST_DEACTIVATED);
++            if (goInfo && goInfo->type == GAMEOBJECT_TYPE_CHEST)
++                loot->sourceGameObject->SetLootState(GO_JUST_DEACTIVATED);
+         }
++        else if (hadLoot && loot->loot_type == LOOT_CORPSE && loot->sourceWorldObjectGUID.IsCreatureOrVehicle())
++            loot->pendingCorpseRollCleanup = true;
+     }
+ 
+     RollId.erase(rollI);
+diff --git a/src/server/game/Handlers/LootHandler.cpp b/src/server/game/Handlers/LootHandler.cpp
+index 2289f8b4328..b43d3387c95 100644
+--- a/src/server/game/Handlers/LootHandler.cpp
++++ b/src/server/game/Handlers/LootHandler.cpp
+@@ -459,6 +459,9 @@ void WorldSession::DoLootRelease(ObjectGuid lguid)
+         loot = &creature->loot;
+         if (loot->isLooted())
+         {
++            if (loot->pendingCorpseRollCleanup)
++                loot->CloseLootSessions(*creature);
++
+             // skip pickpocketing loot for speed, skinning timer reduction is no-op in fact
+             if (!creature->IsAlive())
+                 creature->AllLootRemovedFromCorpse();
+diff --git a/src/server/game/Loot/LootMgr.cpp b/src/server/game/Loot/LootMgr.cpp
+index 82fddc839c5..12471b6fdf2 100644
+--- a/src/server/game/Loot/LootMgr.cpp
++++ b/src/server/game/Loot/LootMgr.cpp
+@@ -21,6 +21,7 @@
+ #include "Group.h"
+ #include "ItemEnchantmentMgr.h"
+ #include "Log.h"
++#include "ObjectAccessor.h"
+ #include "ObjectMgr.h"
+ #include "Player.h"
+ #include "ScriptMgr.h"
+@@ -756,6 +757,21 @@ void Loot::NotifyItemRemoved(uint8 lootIndex)
+     }
+ }
+ 
++void Loot::CloseLootSessions(WorldObject const& source)
++{
++    for (ObjectGuid const& guid : PlayersLooting)
++    {
++        Player* player = ObjectAccessor::GetPlayer(source, guid);
++        if (player && player->GetLootGUID() == source.GetGUID())
++        {
++            player->SetLootGUID(ObjectGuid::Empty);
++            player->SendLootRelease(source.GetGUID());
++            player->RemoveUnitFlag(UNIT_FLAG_LOOTING);
++        }
++    }
++    PlayersLooting.clear();
++}
++
+ void Loot::NotifyMoneyRemoved()
+ {
+     // notify all players that are looting this that the money was removed
+diff --git a/src/server/game/Loot/LootMgr.h b/src/server/game/Loot/LootMgr.h
+index 62b2adc6055..6493215ebc8 100644
+--- a/src/server/game/Loot/LootMgr.h
++++ b/src/server/game/Loot/LootMgr.h
+@@ -324,6 +324,7 @@ struct Loot
+     ObjectGuid roundRobinPlayer;        // GUID of the player having the Round-Robin ownership for the loot. If 0, round robin owner has released.
+     ObjectGuid lootOwnerGUID;
+     LootType loot_type{LOOT_NONE};      // required for achievement system
++    bool pendingCorpseRollCleanup{false}; // Consumed by the corpse on its map update.
+ 
+     // GUID of container that holds this loot (item_instance.entry), set for items that can be looted
+     ObjectGuid containerGUID;
+@@ -362,6 +363,7 @@ struct Loot
+         roundRobinPlayer.Clear();
+         i_LootValidatorRefMgr.clearReferences();
+         loot_type = LOOT_NONE;
++        pendingCorpseRollCleanup = false;
+     }
+ 
+     [[nodiscard]] bool empty() const { return items.empty() && gold == 0; }
+@@ -372,6 +374,7 @@ struct Loot
+     void NotifyMoneyRemoved();
+     void AddLooter(ObjectGuid GUID) { PlayersLooting.insert(GUID); }
+     void RemoveLooter(ObjectGuid GUID) { PlayersLooting.erase(GUID); }
++    void CloseLootSessions(WorldObject const& source);
+ 
+     void generateMoneyLoot(uint32 minAmount, uint32 maxAmount);
+     bool FillLoot(uint32 lootId, LootStore const& store, Player* lootOwner, bool personal, bool noEmptyError = false, uint16 lootMode = LOOT_MODE_DEFAULT, WorldObject* lootSource = nullptr);

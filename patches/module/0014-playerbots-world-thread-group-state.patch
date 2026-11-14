@@ -1417,14 +1417,10 @@ diff --git a/src/Util/EncounterHelpers.cpp b/src/Util/EncounterHelpers.cpp
 index 0cddc20..916a623 100644
 --- a/src/Util/EncounterHelpers.cpp
 +++ b/src/Util/EncounterHelpers.cpp
-@@ -20,6 +20,7 @@
- #include "ObjectAccessor.h"
- #include "PaladinActions.h"
+@@ -22,2 +22,3 @@
  #include "PlayerbotTextMgr.h"
 +#include "PlayerbotWorldThread.h"
  #include "Playerbots.h"
- #include "RogueActions.h"
- #include "RtiTargetValue.h"
 @@ -165,7 +166,7 @@ bool MarkTargetWithIcon(Player* bot, Unit* target, uint8 iconId)
      ObjectGuid currentGuid = group->GetTargetIcon(iconId);
      if (currentGuid != target->GetGUID())

@@ -1,5 +1,5 @@
 diff --git a/src/Bot/Engine/Engine.cpp b/src/Bot/Engine/Engine.cpp
-index 368994d..f7c9305 100644
+index 06acf30..528e4a9 100644
 --- a/src/Bot/Engine/Engine.cpp
 +++ b/src/Bot/Engine/Engine.cpp
 @@ -6,6 +6,7 @@
@@ -71,9 +71,9 @@ index 368994d..f7c9305 100644
          strategy->InitMultipliers(multipliers);
          strategy->InitTriggers(triggers);
          for (auto &iter : strategy->actionNodeFactories.creators)
-@@ -138,6 +161,97 @@ void Engine::Init()
-         fprintf(file, "\n");
-         fclose(file);
+@@ -140,6 +163,97 @@ void Engine::Init()
+             fclose(file);
+         }
      }
 +
 +    strategiesChanged = false;
@@ -169,7 +169,7 @@ index 368994d..f7c9305 100644
  }
  
  bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
-@@ -371,6 +485,7 @@ void Engine::addStrategy(std::string const name, bool init)
+@@ -373,6 +487,7 @@ void Engine::addStrategy(std::string const name, bool init)
  
          LogAction("S:+%s", strategy->getName().c_str());
          strategies[strategy->getName()] = strategy;
@@ -177,7 +177,7 @@ index 368994d..f7c9305 100644
      }
      if (init)
          Init();
-@@ -422,6 +537,7 @@ bool Engine::removeStrategy(std::string const name, bool init)
+@@ -424,6 +539,7 @@ bool Engine::removeStrategy(std::string const name, bool init)
  
      LogAction("S:-%s", name.c_str());
      strategies.erase(i);
@@ -234,10 +234,10 @@ index 9c13976..4885783 100644
      std::vector<NextAction> getHandlers()
      {
 diff --git a/src/Bot/PlayerbotAI.cpp b/src/Bot/PlayerbotAI.cpp
-index 03843ac..e0b2ceb 100644
+index 5a95ecc..e40763e 100644
 --- a/src/Bot/PlayerbotAI.cpp
 +++ b/src/Bot/PlayerbotAI.cpp
-@@ -1544,7 +1544,7 @@ void PlayerbotAI::ChangeEngine(BotState type)
+@@ -1574,7 +1574,7 @@ void PlayerbotAI::ChangeEngine(BotState type)
      {
          currentEngine = engine;
          currentState = type;
